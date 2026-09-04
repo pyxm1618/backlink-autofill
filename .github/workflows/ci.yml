@@ -22,3 +22,8 @@ jobs:
       - run: npm test
       - run: npm run typecheck
       - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backlink-autofill-chrome
+          path: extension/.output/chrome-mv3
+          if-no-files-found: error
