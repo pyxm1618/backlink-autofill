@@ -20,21 +20,31 @@ def load_marketplace(path: Path):
     return data
 
 
-def ensure_submitter_profile(home: Path):
+def ensure_private_data_root(home: Path):
     config_dir = home / ".backlink-autofill"
+    projects_dir = config_dir / "projects"
     config_dir.mkdir(parents=True, exist_ok=True)
+    projects_dir.mkdir(parents=True, exist_ok=True)
+
     profile_path = config_dir / "submitter-profile.json"
     if profile_path.exists():
         return profile_path, False
 
     profile = {
-        "fullName": "",
-        "email": "",
-        "company": "",
+        "schema_version": 1,
+        "name": "",
+        "registration_email": "",
         "country": "",
-        "role": "",
+        "region": "",
+        "city": "",
+        "company": None,
+        "job_title": "",
         "phone": "",
-        "socialUrls": {}
+        "x_twitter": None,
+        "linkedin": None,
+        "github": None,
+        "default_username": None,
+        "notes": []
     }
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return profile_path, True
@@ -68,12 +78,14 @@ def main():
     marketplace["plugins"] = [p for p in marketplace["plugins"] if p.get("name") != PLUGIN_NAME] + [entry]
     marketplace_path.write_text(json.dumps(marketplace, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    profile_path, created = ensure_submitter_profile(home)
+    profile_path, created = ensure_private_data_root(home)
 
     print(f"Installed plugin: {destination}")
     print(f"Updated marketplace: {marketplace_path}")
-    print(f"Submitter profile: {profile_path}{' (created)' if created else ' (preserved)'}")
-    print("Fill reusable name/email/company/country details there once; never put site passwords in this file.")
+    print(f"Shared submitter profile: {profile_path}{' (created)' if created else ' (preserved)'}")
+    print(f"Project data root: {home / '.backlink-autofill' / 'projects'} (preserved)")
+    print("Personal data is shared once; project assets must live under projects/<project-id>/ and never mix across projects.")
+    print("Passwords are not stored in this data root.")
     print("Restart/reload Codex, then invoke $backlink-autofill and explicitly name the project.")
 
 
