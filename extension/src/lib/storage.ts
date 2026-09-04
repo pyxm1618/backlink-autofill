@@ -59,7 +59,7 @@ const QUICK_ICHING_SEED: ProductProfile = {
   screenshots: [],
   sheet: {
     spreadsheetId: '1gAia71b4ts_vghzLZaFvXkEkFbgS3NJv9uVEPmeyY68',
-    sheetName: '免费外链机会',
+    sheetName: '严格免费外链',
   },
   createdAt: Date.now(),
   updatedAt: Date.now(),
