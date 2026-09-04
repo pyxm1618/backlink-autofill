@@ -34,6 +34,7 @@ jobs:
           JSON
           python3 scripts/install-personal.py --repo "$GITHUB_WORKSPACE"
           test -f "$HOME/plugins/backlink-autofill/.codex-plugin/plugin.json"
+          test -f "$HOME/.backlink-autofill/submitter-profile.json"
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -45,5 +46,21 @@ jobs:
           assert 'backlink-autofill' in by_name, by_name
           assert by_name['backlink-autofill']['source']['path'] == './plugins/backlink-autofill'
           assert (home / 'plugins/backlink-autofill/.codex-plugin/plugin.json').exists()
-          print('installer validation passed')
+          profile = home / '.backlink-autofill/submitter-profile.json'
+          payload = json.loads(profile.read_text())
+          assert set(payload) >= {'fullName', 'email', 'company', 'country', 'role', 'phone', 'socialUrls'}
+          payload['fullName'] = 'Persistent User'
+          payload['email'] = 'persistent@example.com'
+          profile.write_text(json.dumps(payload))
+          print('initial installer validation passed')
+          PY
+          python3 scripts/install-personal.py --repo "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          profile = Path(os.environ['HOME']) / '.backlink-autofill/submitter-profile.json'
+          payload = json.loads(profile.read_text())
+          assert payload['fullName'] == 'Persistent User', payload
+          assert payload['email'] == 'persistent@example.com', payload
+          print('submitter profile preservation passed')
           PY
