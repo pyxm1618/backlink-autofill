@@ -88,7 +88,10 @@ export default function App() {
         targetUrl: target?.submitUrl,
         currentTab,
       })
-      setMessage(result.success ? String(result.output ?? 'Form filling completed. Review the page and submit manually.') : String(result.output ?? 'Agent stopped before completion. Resolve the blocker manually, then use Fill current tab.'))
+      const fallback = result.success
+        ? 'Form filling completed. Review the page and submit manually.'
+        : 'Agent stopped before completion. Resolve the blocker manually, then use Fill current tab.'
+      setMessage(result.data || fallback)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally { setRunning(false) }
