@@ -24,7 +24,7 @@ From this repository:
 python3 scripts/install-personal.py
 ```
 
-The installer copies the plugin into `~/.codex/plugins/backlink-autofill` and safely adds/updates its entry in `~/.agents/plugins/marketplace.json` without deleting other plugin entries.
+Following OpenAI's current personal plugin convention, the installer copies the plugin into `~/plugins/backlink-autofill` and safely adds/updates `./plugins/backlink-autofill` in `~/.agents/plugins/marketplace.json` without deleting other plugin entries.
 
 Restart/reload Codex after installation.
 
