@@ -6,6 +6,7 @@
 - Name: Quick I Ching
 - Canonical URL: `https://quickiching.com/`
 - Positioning: Free online I Ching casting and hexagram reading tool.
+- Organization / brand display name: `Quick I Ching` when a form means product/brand organization rather than a legal company name.
 
 ## SEO
 
@@ -64,6 +65,7 @@ Do not state or imply:
 - that AI is currently a product feature
 - medical, legal, or investment advice
 - unverified awards, metrics, user counts, reviews, partnerships, integrations, or pricing claims
+- that `Quick I Ching` is a registered/legal company name unless separately verified
 
 ## Important internal pages
 
@@ -77,12 +79,15 @@ Do not state or imply:
 
 ## Contact / assets
 
-- Founder/submitter name: not configured
-- Contact email: not configured
-- Social links: not configured
-- Logo/screenshots: not configured
+- Project/support email: `support@quickiching.com` (verified on the canonical site). Use this for fields asking for project/support contact. Do not substitute it for the user's account/login email unless the private submitter profile explicitly chooses it.
+- Canonical logo source: `https://www.quickiching.com/quick-i-ching-logo-mark.png` (official-site asset reference). For file-upload fields, download this official asset to a temporary local file first, then upload it if the browser tool supports file upload.
+- Founder/submitter personal name: load from private `~/.backlink-autofill/submitter-profile.json`.
+- Account/login email: load from the private submitter profile; do not infer it from the support email.
+- Country / role / phone: load from the private submitter profile when configured.
+- Social links: not configured.
+- Screenshots: not configured.
 
-If a target form requires an unconfigured value, leave it for the user instead of inventing one.
+If a project-specific required value remains unconfigured, flag it instead of inventing one. Reusable personal identity/contact data belongs in the private submitter profile rather than this public project file.
 
 ## Backlink queue
 
