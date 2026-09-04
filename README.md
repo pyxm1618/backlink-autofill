@@ -7,7 +7,8 @@
 - 强制显式选择当前项目；未选择项目时禁止运行。
 - 每个项目独立保存：主关键词、次关键词、Title、Tagline、多长度 Description、Tags、Categories、事实清单、禁止声称、联系信息与素材。
 - AI 优先使用审核过的标准资料，只能因字段长度/格式/站点语境做必要改写，不允许新增未经审核的产品事实。
-- 可读取项目配置的 Google Sheet 外链列表；Quick I Ching 默认指向现有 BacklinkOS 主库的 `免费外链机会`。
+- 可读取项目配置的 Google Sheet 外链列表；Quick I Ching 默认指向现有 BacklinkOS 主库的 `严格免费外链` 执行页，而不是发现候选池。
+- 会保留 Sheet 中的提交条件/备注，例如换链、Top 3、upvote 门槛等，供执行前判断。
 - 可直接对当前标签页执行 Fill，也可从 Sheet 选择目标后 Open & fill。
 - 允许尝试浏览器现有登录态下的普通 Google/GitHub OAuth。
 - CAPTCHA、滑块、Cloudflare、2FA、手机确认等安全验证交给人工处理。
