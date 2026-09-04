@@ -20,6 +20,26 @@ def load_marketplace(path: Path):
     return data
 
 
+def ensure_submitter_profile(home: Path):
+    config_dir = home / ".backlink-autofill"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    profile_path = config_dir / "submitter-profile.json"
+    if profile_path.exists():
+        return profile_path, False
+
+    profile = {
+        "fullName": "",
+        "email": "",
+        "company": "",
+        "country": "",
+        "role": "",
+        "phone": "",
+        "socialUrls": {}
+    }
+    profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return profile_path, True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Install Backlink Autofill as a personal Codex plugin")
     parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[1]), help="repository root")
@@ -31,8 +51,6 @@ def main():
         raise SystemExit(f"Plugin source not found: {source}")
 
     home = Path.home()
-    # OpenAI's current personal marketplace convention resolves
-    # ./plugins/<name> from ~/.agents/plugins/marketplace.json to ~/plugins/<name>.
     destination = home / "plugins" / PLUGIN_NAME
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, destination, dirs_exist_ok=True)
@@ -50,8 +68,12 @@ def main():
     marketplace["plugins"] = [p for p in marketplace["plugins"] if p.get("name") != PLUGIN_NAME] + [entry]
     marketplace_path.write_text(json.dumps(marketplace, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    profile_path, created = ensure_submitter_profile(home)
+
     print(f"Installed plugin: {destination}")
     print(f"Updated marketplace: {marketplace_path}")
+    print(f"Submitter profile: {profile_path}{' (created)' if created else ' (preserved)'}")
+    print("Fill reusable name/email/company/country details there once; never put site passwords in this file.")
     print("Restart/reload Codex, then invoke $backlink-autofill and explicitly name the project.")
 
 
