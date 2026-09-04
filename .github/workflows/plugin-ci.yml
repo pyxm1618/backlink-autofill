@@ -32,35 +32,51 @@ jobs:
             ]
           }
           JSON
+
           python3 scripts/install-personal.py --repo "$GITHUB_WORKSPACE"
           test -f "$HOME/plugins/backlink-autofill/.codex-plugin/plugin.json"
           test -f "$HOME/.backlink-autofill/submitter-profile.json"
+          test -d "$HOME/.backlink-autofill/projects"
+
           python3 - <<'PY'
           import json, os
           from pathlib import Path
+
           home = Path(os.environ['HOME'])
-          p = home / '.agents/plugins/marketplace.json'
-          data = json.loads(p.read_text())
-          by_name = {x['name']: x for x in data['plugins']}
+          marketplace = json.loads((home / '.agents/plugins/marketplace.json').read_text())
+          by_name = {x['name']: x for x in marketplace['plugins']}
           assert 'existing-plugin' in by_name, by_name
           assert 'backlink-autofill' in by_name, by_name
           assert by_name['backlink-autofill']['source']['path'] == './plugins/backlink-autofill'
-          assert (home / 'plugins/backlink-autofill/.codex-plugin/plugin.json').exists()
+
           profile = home / '.backlink-autofill/submitter-profile.json'
           payload = json.loads(profile.read_text())
-          assert set(payload) >= {'fullName', 'email', 'company', 'country', 'role', 'phone', 'socialUrls'}
-          payload['fullName'] = 'Persistent User'
-          payload['email'] = 'persistent@example.com'
+          canonical = {
+              'schema_version', 'name', 'registration_email', 'country', 'region', 'city',
+              'company', 'job_title', 'phone', 'x_twitter', 'linkedin', 'github',
+              'default_username', 'notes'
+          }
+          assert set(payload) == canonical, payload
+          payload['name'] = 'Persistent User'
+          payload['registration_email'] = 'persistent@example.com'
           profile.write_text(json.dumps(payload))
+
+          project_b = home / '.backlink-autofill/projects/project-b'
+          project_b.mkdir(parents=True)
+          (project_b / 'marker.txt').write_text('KEEP')
           print('initial installer validation passed')
           PY
+
           python3 scripts/install-personal.py --repo "$GITHUB_WORKSPACE"
+
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          profile = Path(os.environ['HOME']) / '.backlink-autofill/submitter-profile.json'
-          payload = json.loads(profile.read_text())
-          assert payload['fullName'] == 'Persistent User', payload
-          assert payload['email'] == 'persistent@example.com', payload
-          print('submitter profile preservation passed')
+
+          root = Path(os.environ['HOME']) / '.backlink-autofill'
+          payload = json.loads((root / 'submitter-profile.json').read_text())
+          assert payload['name'] == 'Persistent User', payload
+          assert payload['registration_email'] == 'persistent@example.com', payload
+          assert (root / 'projects/project-b/marker.txt').read_text() == 'KEEP'
+          print('shared profile and sibling-project preservation passed')
           PY
