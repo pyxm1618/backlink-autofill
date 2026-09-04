@@ -6,7 +6,7 @@ const HEADER_ALIASES = {
   priority: ['优先级', 'priority'],
   type: ['机会类型', '获取方式', 'type'],
   confidence: ['置信度', 'confidence'],
-  notes: ['核验说明', '备注', 'notes'],
+  notes: ['核验说明', '条件/备注', '备注', 'notes'],
 } as const
 
 function findIndex(headers: string[], aliases: readonly string[]): number {
