@@ -1,7 +1,7 @@
 {
   "name": "backlink-autofill",
-  "version": "0.1.0",
-  "description": "Project-isolated backlink submission workflow that uses the current Codex/ChatGPT model, browser tools, and reviewed project data without a separate LLM API.",
+  "version": "0.1.1",
+  "description": "Project-isolated backlink submission workflow that uses the current Codex/ChatGPT model, browser tools, one shared submitter profile, and selected-project-only assets without a separate LLM API.",
   "author": {
     "name": "pyxm1618"
   },
@@ -17,8 +17,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Backlink Autofill",
-    "shortDescription": "Fill vetted backlink forms with reviewed project data",
-    "longDescription": "Select one project explicitly, use its reviewed SEO submission data, work through vetted backlink targets in the user's browser, handle normal existing-session login when possible, fill the form, and stop before final submission.",
+    "shortDescription": "Fill vetted backlink forms with isolated project data",
+    "longDescription": "Select one project explicitly, combine its reviewed SEO data and private assets with one shared submitter profile, work through vetted backlink targets in the user's browser, and stop before final submission.",
     "developerName": "pyxm1618",
     "category": "Marketing",
     "capabilities": [
