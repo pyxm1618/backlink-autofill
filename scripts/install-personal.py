@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 PLUGIN_NAME = "backlink-autofill"
+PLUGIN_RELATIVE_PATH = f"./plugins/{PLUGIN_NAME}"
 
 
 def load_marketplace(path: Path):
@@ -30,7 +31,9 @@ def main():
         raise SystemExit(f"Plugin source not found: {source}")
 
     home = Path.home()
-    destination = home / ".codex" / "plugins" / PLUGIN_NAME
+    # OpenAI's current personal marketplace convention resolves
+    # ./plugins/<name> from ~/.agents/plugins/marketplace.json to ~/plugins/<name>.
+    destination = home / "plugins" / PLUGIN_NAME
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, destination, dirs_exist_ok=True)
 
@@ -40,7 +43,7 @@ def main():
 
     entry = {
         "name": PLUGIN_NAME,
-        "source": {"source": "local", "path": str(destination)},
+        "source": {"source": "local", "path": PLUGIN_RELATIVE_PATH},
         "policy": {"installation": "AVAILABLE", "authentication": "ON_USE"},
         "category": "Marketing",
     }
