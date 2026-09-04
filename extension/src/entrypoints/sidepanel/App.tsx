@@ -75,7 +75,7 @@ export default function App() {
   }
 
   async function execute(target?: BacklinkTarget, currentTab = false) {
-    if (!activeProject) {
+    if (!activeProject || !state) {
       setError('Select a project first. The agent will not guess or fall back to another project.')
       return
     }
