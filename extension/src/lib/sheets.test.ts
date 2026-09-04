@@ -27,4 +27,19 @@ describe('parseSheetTargets', () => {
     ]
     expect(parseSheetTargets(values).map((target) => target.name)).toEqual(['sideprojects.net'])
   })
+
+  it('maps the 严格免费外链 condition column into notes', () => {
+    const values = [
+      ['域名', '获取方式', '提交/发布入口', '条件/备注'],
+      ['uneed.best', '免费（条件）', 'https://www.uneed.best/', '当日需 ≥10 upvotes，达标后保持 Dofollow'],
+    ]
+    expect(parseSheetTargets(values)).toEqual([
+      {
+        name: 'uneed.best',
+        submitUrl: 'https://www.uneed.best/',
+        type: '免费（条件）',
+        notes: '当日需 ≥10 upvotes，达标后保持 Dofollow',
+      },
+    ])
+  })
 })
