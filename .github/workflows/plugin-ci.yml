@@ -50,6 +50,7 @@ jobs:
           test -d "$HOME/.backlink-autofill/browser-profile"
           test -d "$HOME/.backlink-autofill/runtime"
           test -d "$HOME/.backlink-autofill/recipes"
+          test -d "$HOME/.backlink-autofill/credentials"
 
           python3 scripts/configure-control-plane.py \
             --spreadsheet-id TEST_SHEET_ID \
@@ -92,6 +93,9 @@ jobs:
           project_b = root / 'projects/project-b'
           project_b.mkdir(parents=True)
           (project_b / 'marker.txt').write_text('KEEP')
+
+          credentials = root / 'credentials'
+          (credentials / 'example.com.json').write_text('{"keep": true}')
           print('initial installer/control-plane validation passed')
           PY
 
@@ -106,10 +110,11 @@ jobs:
           assert payload['name'] == 'Persistent User', payload
           assert payload['registration_email'] == 'persistent@example.com', payload
           assert (root / 'projects/project-b/marker.txt').read_text() == 'KEEP'
+          assert (root / 'credentials/example.com.json').read_text() == '{"keep": true}'
           control_payload = json.loads((root / 'control-plane.json').read_text())
           assert control_payload['spreadsheet_id'] == 'TEST_SHEET_ID', control_payload
           assert control_payload['master_sheet'] == '外链总表', control_payload
           assert control_payload['project_sheet'] == '项目外链管理', control_payload
           assert control_payload['default_batch_size'] == 100, control_payload
-          print('shared profile, control plane, runtime dirs, and sibling project preservation passed')
+          print('shared profile, control plane, credentials, runtime dirs, and sibling project preservation passed')
           PY
