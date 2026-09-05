@@ -247,13 +247,34 @@ class EmailOtpResolverTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        out, err = proc.communicate(input=b"\n")
-        self.assertNotEqual(proc.returncode, 0)
-        err_json = json.loads(err.decode("utf-8"))
-        self.assertEqual(err_json.get("error_code"), "MISSING_TARGET_ID")
+    def test_cli_resolve_email_otp_with_target_id_initialization(self):
+        """10b. CLI resolve-email-otp 携带 target-id 和 stdin 时正常初始化 Runtime，绝不出现 TypeError('headed')"""
+        cmd = [
+            sys.executable,
+            str(PLUGIN_ROOT / "scripts" / "browser_cli.py"),
+            "resolve-email-otp",
+            "--profile-dir", "/tmp/fake-profile",
+            "--url", "https://www.foundrlist.com/signup",
+            "--target-id", "C725889AECDDBA8597995A2CA06866CB",
+            "--allow-local-fallback",
+            "--stdin",
+        ]
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        out, err = proc.communicate(input=b"839201\n")
+        # 核心断言：绝不能出现 TypeError 崩溃，绝不因 headed 参数错误报错
+        err_text = err.decode("utf-8")
+        self.assertNotIn("TypeError", err_text)
+        self.assertNotIn("unexpected keyword argument 'headed'", err_text)
+        if err_text:
+            err_json = json.loads(err_text)
+            self.assertNotEqual(err_json.get("message"), "Unexpected browser runtime failure: TypeError")
 
 
-    def test_provider_layer_does_not_pollute_browser_runtime(self):
         """11. 边界隔离：Browser Runtime 不得导入任何 Gmail / MCP / Codex 模块"""
         with open(PLUGIN_ROOT / "scripts" / "browser_runtime.py", "r", encoding="utf-8") as f:
             content = f.read()

@@ -153,6 +153,54 @@ class CDPSessionTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "BROWSER_HOST_UNAVAILABLE")
         self.assertIn("unavailable", ctx.exception.message.lower())
 
+    def test_find_page_by_target_id_detaches_all_cdp_sessions(self):
+        """P2-3: 验证 _find_page_by_target_id 在遍历所有页面时均执行 session.detach()，杜绝句柄泄漏"""
+        with BrowserRuntime(
+            profile_dir=Path(self.user_data_dir),
+            cdp_url=self.cdp_url,
+            allow_local_fallback=False,
+        ) as rt:
+            ctx = rt.context
+            assert ctx is not None
+            # 打开两个新页面用于遍历
+            p1 = ctx.new_page()
+            p2 = ctx.new_page()
+
+            # 获取 p2 的真实 target_id
+            target_id_p2 = rt._get_page_target_id(p2)
+            self.assertIsNotNone(target_id_p2)
+
+            # Spy on new_cdp_session
+            created_sessions = []
+            orig_new_cdp_session = ctx.new_cdp_session
+
+            def spy_new_cdp_session(page):
+                sess = orig_new_cdp_session(page)
+                orig_detach = sess.detach
+                sess.detached_called = False
+
+                def spy_detach():
+                    sess.detached_called = True
+                    return orig_detach()
+
+                sess.detach = spy_detach
+                created_sessions.append(sess)
+                return sess
+
+            ctx.new_cdp_session = spy_new_cdp_session
+            try:
+                found_page = rt._find_page_by_target_id(target_id_p2)
+                self.assertIs(found_page, p2)
+                self.assertGreaterEqual(len(created_sessions), 1)
+                # 断言所有创建的 CDP session 均被 detach
+                for idx, s in enumerate(created_sessions):
+                    self.assertTrue(s.detached_called, f"CDP session {idx} was not detached!")
+            finally:
+                ctx.new_cdp_session = orig_new_cdp_session
+                p1.close()
+                p2.close()
+
 
 if __name__ == "__main__":
     unittest.main()
+

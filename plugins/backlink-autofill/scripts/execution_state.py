@@ -85,6 +85,249 @@ FORBIDDEN_RESULT_URL_SEGMENTS = (
 )
 
 
+def normalize_canonical_url(url: str | None) -> str:
+    """Normalize a project or platform URL for reliable identity comparison.
+
+    Strips protocol, www prefix, trailing slashes, default ports, and query parameters.
+    Example:
+      https://www.quickiching.com/ -> quickiching.com
+      http://quickiching.com       -> quickiching.com
+      https://quickiching.com/app/ -> quickiching.com/app
+    """
+    if not url or not isinstance(url, str):
+        return ""
+    raw = url.strip().lower()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    netloc = parsed.netloc or ""
+    if ":" in netloc:
+        netloc = netloc.split(":")[0]
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    path = parsed.path.rstrip("/")
+    if not netloc:
+        return ""
+    return f"{netloc}{path}"
+
+
+_SUBMISSION_CONTEXT_CUES = (
+    "pending",
+    "scheduled",
+    "published",
+    "live",
+    "active",
+    "under review",
+    "in review",
+    "waiting",
+    "approved",
+    "queue",
+    "edit listing",
+    "view listing",
+    "manage listing",
+    "launch date",
+    "排期",
+    "审核",
+    "已发布",
+    "上线",
+)
+
+_LISTINGS_CONTAINER_CUES = (
+    "my products",
+    "your listings",
+    "my listings",
+    "submissions",
+    "my submissions",
+    "projects",
+    "all listings",
+    "dashboard",
+    "manage listings",
+    "submitted products",
+    "launch queue",
+)
+
+
+def detect_existing_project_submission(
+    content: Any,
+    project_name: str,
+    canonical_url: str,
+) -> dict[str, Any]:
+    """Universal Existing Submission Preflight.
+
+    Distinguishes:
+    Existing account != Existing submission
+
+    Returns:
+    - FOUND: Positive verifiable submission evidence found for this project identity.
+             Strictly forbids new Final Submit; collects existing status/evidence.
+    - NOT_FOUND: Authenticated listings view verified, and this project is explicitly absent.
+                 Safe to proceed with creating a new submission.
+    - UNKNOWN: View ambiguous, not a confirmed listings dashboard, or uncertain structure.
+               Do not guess; requires human inspection before irreversible Final Submit.
+    """
+    norm_url = normalize_canonical_url(canonical_url)
+    norm_name = str(project_name or "").strip().lower()
+
+    if not norm_url and not norm_name:
+        return {
+            "verdict": "UNKNOWN",
+            "reason": "Missing both project_name and canonical_url for preflight",
+            "matched_identity": None,
+            "status_hint": None,
+            "scheduled_date": None,
+            "public_listing_url": None,
+        }
+
+    # Case A: Structured list of listing items/records
+    if isinstance(content, list):
+        if not content:
+            return {
+                "verdict": "NOT_FOUND",
+                "reason": "Listings list is explicitly empty",
+                "matched_identity": None,
+                "status_hint": None,
+                "scheduled_date": None,
+                "public_listing_url": None,
+            }
+
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_text = " ".join(str(v) for v in item.values()).lower()
+            item_url = normalize_canonical_url(item.get("url") or item.get("link") or item.get("target_url"))
+            name_match = norm_name and norm_name in item_text
+            url_match = norm_url and (norm_url == item_url or norm_url in item_text)
+
+            if name_match or url_match:
+                has_context = any(cue in item_text for cue in _SUBMISSION_CONTEXT_CUES)
+                if has_context or "status" in item or "scheduled_date" in item:
+                    sched_date = None
+                    date_match = re.search(r"\b(202\d-[0-1]\d-[0-3]\d)\b", item_text)
+                    if date_match:
+                        sched_date = date_match.group(1)
+                    elif item.get("scheduled_date"):
+                        sched_date = str(item["scheduled_date"]).strip()
+
+                    status_hint = str(item.get("status") or "").strip()
+                    if not status_hint:
+                        for cue in _SUBMISSION_CONTEXT_CUES:
+                            if cue in item_text:
+                                status_hint = cue
+                                break
+
+                    return {
+                        "verdict": "FOUND",
+                        "reason": f"Matched existing submission record for project identity (name={name_match}, url={url_match})",
+                        "matched_identity": norm_url if url_match else norm_name,
+                        "status_hint": status_hint,
+                        "scheduled_date": sched_date,
+                        "public_listing_url": item.get("public_listing_url") or item.get("listing_url"),
+                    }
+
+        return {
+            "verdict": "NOT_FOUND",
+            "reason": f"Explicit listings list of {len(content)} items inspected; project identity not present",
+            "matched_identity": None,
+            "status_hint": None,
+            "scheduled_date": None,
+            "public_listing_url": None,
+        }
+
+    # Case B: Unstructured DOM text from dashboard/listings page
+    if isinstance(content, str):
+        text_lower = content.lower()
+        has_container = any(cue in text_lower for cue in _LISTINGS_CONTAINER_CUES)
+        if not has_container:
+            return {
+                "verdict": "UNKNOWN",
+                "reason": "Page does not exhibit confirmed listings/dashboard container cues",
+                "matched_identity": None,
+                "status_hint": None,
+                "scheduled_date": None,
+                "public_listing_url": None,
+            }
+
+        # 段落/行级局部匹配，防止全页面非相关文案（如搜索历史、页脚链接）发生全局误判
+        blocks = re.split(r"\n\s*\n|(?<=</div>)|(?<=</tr>)|(?<=</li>)", content)
+        for block in blocks:
+            b_lower = block.lower()
+            name_match = norm_name and norm_name in b_lower
+            url_match = norm_url and norm_url in b_lower
+            if name_match or url_match:
+                has_context = any(cue in b_lower for cue in _SUBMISSION_CONTEXT_CUES)
+                if has_context:
+                    sched_date = None
+                    date_match = re.search(r"\b(202\d-[0-1]\d-[0-3]\d)\b", b_lower)
+                    if date_match:
+                        sched_date = date_match.group(1)
+
+                    status_hint = ""
+                    for cue in _SUBMISSION_CONTEXT_CUES:
+                        if cue in b_lower:
+                            status_hint = cue
+                            break
+
+                    return {
+                        "verdict": "FOUND",
+                        "reason": f"Positive submission context found in listing card/row (name={name_match}, url={url_match})",
+                        "matched_identity": norm_url if url_match else norm_name,
+                        "status_hint": status_hint,
+                        "scheduled_date": sched_date,
+                        "public_listing_url": None,
+                    }
+
+        # 如果确认具有 listings 容器，且明确具有空列表标志
+        empty_cues = (
+            "no products",
+            "no listings",
+            "haven't submitted",
+            "no submissions",
+            "you don't have any",
+            "empty",
+            "0 products",
+            "0 listings",
+        )
+        if any(empty in text_lower for empty in empty_cues):
+            return {
+                "verdict": "NOT_FOUND",
+                "reason": "Confirmed listings dashboard indicates empty submission list",
+                "matched_identity": None,
+                "status_hint": None,
+                "scheduled_date": None,
+                "public_listing_url": None,
+            }
+
+        # 如果有容器但无法断定是否完整列出，且未找到项目，保守返回 NOT_FOUND 或 UNKNOWN
+        # 如果列表中包含其他 listing card 但未匹配当前项目，且明确具有 listing 结构
+        if re.search(r"(edit|view|status|manage)\s*listing", text_lower):
+            return {
+                "verdict": "NOT_FOUND",
+                "reason": "Listings container with items inspected; current project not found",
+                "matched_identity": None,
+                "status_hint": None,
+                "scheduled_date": None,
+                "public_listing_url": None,
+            }
+
+        return {
+            "verdict": "UNKNOWN",
+            "reason": "Listings page structure uncertain; cannot conclusively verify absence of submission",
+            "matched_identity": None,
+            "status_hint": None,
+            "scheduled_date": None,
+            "public_listing_url": None,
+        }
+
+    return {
+        "verdict": "UNKNOWN",
+        "reason": "Unsupported content format for preflight inspection",
+        "matched_identity": None,
+        "status_hint": None,
+        "scheduled_date": None,
+        "public_listing_url": None,
+    }
+
+
 def sanitize_result_url(
     url: str | None,
     evidence: dict[str, Any] | None = None,

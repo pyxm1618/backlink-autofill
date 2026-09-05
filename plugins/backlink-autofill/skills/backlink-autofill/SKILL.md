@@ -188,17 +188,25 @@ Fast handling:
 
 Default to the persistent CDP Chrome session (`http://127.0.0.1:9222`, or `BACKLINK_BROWSER_CDP_URL`) using existing `browser.contexts[0]`.
 
+Core invariant: **Existing account != Existing submission**.
+Local site credentials represent *justification to attempt login*, NOT factual evidence that an account or submission exists on the platform.
+
 Login priority for each platform:
-1. **Existing session on target site** → reuse immediately.
+1. **Existing session on target site** → reuse immediately (proceed directly to Preflight).
 2. **Target site supports Google OAuth** and persistent CDP Chrome has an active Google session → try Google OAuth first.
    - If Google displays an existing account chooser or standard consent screen → proceed automatically.
-   - If Google prompts for the primary Google password, 2FA, passkey, or security challenge → **strictly forbid reading, generating, or filling Google credentials**; do not bypass security challenges; fall back to independent site registration or human handoff.
-3. **Platform supports standard email/password registration** → use `credential_fill` with `mode = create_or_reuse` and the approved registration email from profile.
-   - For an existing backlink-platform login form: use `credential_fill` with `mode = existing_only` only if a credential already exists for that current domain/account; do not invent a new password for an existing login form.
-4. **Credential domain isolation (two-layer defense)**:
+   - If Google prompts for the primary Google password, 2FA, passkey, or security challenge → **strictly forbid reading, generating, or filling Google credentials**; do not bypass security challenges; fall back to site login or human handoff.
+3. **No session, but Login path available and local site credential exists** →
+   - Attempt login using existing credential (`mode = existing_only`).
+   - If login succeeds → existing account confirmed, proceed to Preflight.
+   - If explicit "account not found" / "invalid user" error is returned → platform account does not exist; only then proceed to signup (`mode = create_or_reuse`).
+   - If ambiguous, blocked by CAPTCHA, or verification fails → enter `需人工` (HUMAN_PENDING); do not guess or blindly switch to signup.
+4. **No session, no existing credential, or confirmed new account** →
+   - Use `credential_fill` with `mode = create_or_reuse` and the approved registration email from profile.
+5. **Credential domain isolation (two-layer defense)**:
    - **Layer 1 (Target Domain Allow Rule)**: `credential_fill` may ONLY fill passwords when the current page domain matches the explicit `target_domain` of the backlink platform.
    - **Layer 2 (Third-party IdP blocklist)**: `credential_fill` is strictly forbidden on any third-party Identity Provider domain (such as `accounts.google.com`, `github.com`, `x.com`, `twitter.com`, `apple.com`, `microsoft.com`).
-5. **Human blockers (e.g. EMAIL_OTP, CAPTCHA, 2FA, SMS)**:
+6. **Human blockers (e.g. EMAIL_OTP, CAPTCHA, 2FA, SMS)**:
    - `EMAIL_OTP` requires composite evidence: both verification code cues and explicit email/inbox context.
    - Enter `需人工`, retain the browser tab, persist `human_pending` record, and **continue the batch immediately without stopping**.
 
@@ -220,12 +228,31 @@ Uploads must stay inside the selected project's private asset root. Derived imag
 
 **Read the form back after filling.** Verify ordinary field values, uploaded filename, and credential-fill success without exposing secret values.
 
+### 7a. Existing Submission Preflight (Duplicate Prevention Invariant)
+
+**Existing project/submission preflight MUST run before any irreversible Final Submit.**
+
+Once authenticated into the account, inspect the dashboard / my products / listings / submissions view before creating a new submission:
+
+1. **Structured Preflight Check (`detect_existing_project_submission`)**:
+   - Compare normalized project identity (canonical URL ignoring protocol/www/trailing slashes, and exact project name) against listing items/cards.
+2. **Preflight Verdict Rules**:
+   - **`FOUND`**: Project already exists in platform queue, review, scheduled, or live state.
+     - **STRICT PROHIBITION**: NEVER click Final Submit; NEVER create a duplicate submission.
+     - Collect direct observable evidence (e.g. scheduled date, under review banner, or public listing link).
+     - Classify status according to Evidence Contract and update Sheet accordingly.
+   - **`NOT_FOUND`**: Confirmed listings view verified and current project identity is explicitly absent.
+     - Proceed normally with creating and submitting the backlink form.
+   - **`UNKNOWN`**: Listings structure ambiguous, page unconfirmed, or unable to conclusively verify.
+     - **Never guess**. Halt safely before irreversible Final Submit and mark `需人工` with reason `"已有提交状态不明确，暂停避免重复提交"`.
+
 ### 8. Final submit policy
 
 **Final submit may be automatic** when all are true:
 
 - free/non-payment path;
 - no security/human blocker;
+- **Existing Submission Preflight returned `NOT_FOUND`** (never submit if `FOUND` or `UNKNOWN`);
 - all required facts are approved;
 - no unusual legal authorization or external project-site modification;
 - final action/result can be read back.

@@ -14,6 +14,7 @@ try:
     from execution_state import (
         clear_human_pending,
         list_human_pending,
+        load_human_pending,
         resolve_human_pending,
         ProductionSheetGate,
         EvidenceContractError,
@@ -87,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     pending_resolve_parser.add_argument("--project-id", required=True)
     pending_resolve_parser.add_argument("--backlink-id", required=True)
     pending_resolve_parser.add_argument("--terminal-status", required=True)
+    pending_resolve_parser.add_argument("--cdp-url", help="Optional CDP endpoint URL to best-effort close resolved tab")
 
     pending_clear_parser = subparsers.add_parser("human-pending-clear")
     pending_clear_parser.add_argument("--runtime-root", required=True)
@@ -171,6 +173,9 @@ def main() -> int:
             result = {"ok": True, "count": len(items), "project_id": args.project_id, "items": items}
 
         elif args.command == "human-pending-resolve":
+            pending_record = load_human_pending(Path(args.runtime_root), args.project_id, args.backlink_id)
+            target_id = pending_record.get("target_id") if pending_record else None
+
             resolved = resolve_human_pending(
                 Path(args.runtime_root),
                 project_id=args.project_id,
@@ -184,6 +189,37 @@ def main() -> int:
                 "backlink_id": args.backlink_id,
                 "terminal_status": args.terminal_status,
             }
+
+            # Best-effort tab cleanup: 终态已确认，Tab 关闭仅为资源清理，任何失败绝不污染业务状态
+            if resolved and target_id:
+                cleanup_status = "SKIPPED"
+                cdp_candidate = args.cdp_url or os.environ.get("BACKLINK_BROWSER_CDP_URL") or os.environ.get("SEO_BROWSER_CDP_URL") or "http://127.0.0.1:9222"
+                try:
+                    from playwright.sync_api import sync_playwright
+                    with sync_playwright() as pw:
+                        browser = pw.chromium.connect_over_cdp(cdp_candidate, timeout=2000)
+                        if browser.contexts:
+                            ctx = browser.contexts[0]
+                            for p in ctx.pages:
+                                sess = None
+                                try:
+                                    sess = ctx.new_cdp_session(p)
+                                    info = sess.send("Target.getTargetInfo")
+                                    if info.get("targetInfo", {}).get("targetId") == target_id:
+                                        p.close()
+                                        cleanup_status = "CLOSED"
+                                        break
+                                except Exception:
+                                    continue
+                                finally:
+                                    if sess is not None:
+                                        try:
+                                            sess.detach()
+                                        except Exception:
+                                            pass
+                except Exception:
+                    cleanup_status = "TAB_CLEANUP_FAILED"
+                result["tab_cleanup"] = cleanup_status
 
         elif args.command == "human-pending-clear":
             if not args.admin_override:
@@ -269,7 +305,7 @@ def main() -> int:
             with BrowserRuntime(
                 profile_dir=Path(args.profile_dir),
                 browser_channel=args.browser_channel,
-                headed=args.headed,
+                headless=not args.headed,
                 cdp_url=args.cdp_url,
                 allow_local_fallback=args.allow_local_fallback,
                 resume_target_id=args.target_id,

@@ -403,6 +403,7 @@ class BrowserRuntime:
     def _find_page_by_target_id(self, target_id: str) -> Page | None:
         assert self._context is not None
         for page in self._context.pages:
+            session = None
             try:
                 session = self._context.new_cdp_session(page)
                 info = session.send("Target.getTargetInfo")
@@ -410,6 +411,12 @@ class BrowserRuntime:
                     return page
             except Exception:
                 continue
+            finally:
+                if session is not None:
+                    try:
+                        session.detach()
+                    except Exception:
+                        pass
         return None
 
     def _get_page_target_id(self, page: Page) -> str | None:
@@ -507,10 +514,11 @@ class BrowserRuntime:
     def __exit__(self, exc_type, exc, tb) -> None:
         if self.is_external_cdp:
             if self.page is not None:
+                # 恢复的 Tab 仅在依然处于 human blocker 状态时保留；若已达终态或无 blocker，则正常关闭
                 should_keep = (
-                    bool(self.resume_target_id)
-                    or self.keep_tab
+                    self.keep_tab
                     or (self.keep_on_human_blocker and self._stopped_for_human)
+                    or (bool(self.resume_target_id) and self._stopped_for_human)
                 )
                 if not should_keep:
                     try:
