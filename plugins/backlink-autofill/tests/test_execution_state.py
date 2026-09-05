@@ -104,7 +104,7 @@ class ExecutionStateTests(unittest.TestCase):
                 {"auth": {"passwd": "x"}},
                 {"nested": [{"secret": "x"}]},
                 {"headers": {"access_token": "x"}},
-                {"headers": {"apiKey": "x"}},
+                {"headers": {"api_key": "x"}},
             ]
             for payload in bad_payloads:
                 with self.subTest(payload=payload):
