@@ -27,6 +27,17 @@ Turn the current single-target autofill workflow into a project-isolated backlin
 7. **Human only on exception.** CAPTCHA, 2FA, passkey, phone verification, manual payment/terms decisions, missing facts, or similar conditions move the task to `NEEDS_HUMAN` and open a visible browser.
 8. **Evidence before status.** `SUBMITTED` or `LIVE` may only be written after browser evidence confirms the corresponding state.
 
+## Google Sheets topology
+
+Use two logical layers and keep project execution physically isolated by default:
+
+1. **One global master backlink spreadsheet** — platform/opportunity fact base shared across projects.
+2. **One independent project backlink-management spreadsheet per project** — execution queue and history for that project only.
+
+Do not place every project's execution queue in one shared spreadsheet by default. The selected project's agent should normally need only its own project spreadsheet plus controlled write access to the global master for newly observed platform facts.
+
+The two layers join through `backlink_id`.
+
 ## Data model
 
 ### 1. Master backlink sheet
@@ -59,7 +70,7 @@ The master sheet never stores project-specific execution status such as "Quick I
 
 ### 2. Project backlink management sheet
 
-Each project has its own task sheet. The submission agent reads only the selected project's sheet.
+Each project has its own spreadsheet. The submission agent reads only the explicitly selected project's spreadsheet.
 
 Required columns:
 
@@ -99,6 +110,8 @@ Transitions:
 - `SUBMITTED | UNDER_REVIEW -> LIVE` after later verification
 - `FAILED -> PENDING` only by explicit retry policy or user action
 
+Queue recovery rule: an `IN_PROGRESS` row older than the configured stale threshold with no active execution checkpoint must be recovered to `PENDING` or `FAILED` according to the last recorded evidence; never leave abandoned rows permanently locked.
+
 ## Discovery and deduplication
 
 Discovery owns deduplication before writing to the master sheet.
@@ -115,7 +128,7 @@ The discovery skill should not run Semrush or other authority scoring as a submi
 
 For the selected project:
 
-1. Read only that project's task sheet.
+1. Read only that project's task spreadsheet.
 2. Select rows with `PENDING`, subject to the daily limit.
 3. Mark the row `IN_PROGRESS` with timestamp.
 4. Load the shared submitter profile and selected project profile/assets.
