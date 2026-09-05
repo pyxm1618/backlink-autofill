@@ -181,6 +181,70 @@ def _interactive_snapshot(page: Page) -> list[dict[str, Any]]:
     )
 
 
+def detect_human_blocker(page: Page, body_excerpt: str | None = None) -> dict[str, str] | None:
+    """Detect only high-signal conditions that should be handed to a human.
+
+    This is intentionally conservative. Ambiguous policy/terms decisions remain a
+    model-level decision; this function only recognizes strong browser evidence.
+    """
+
+    try:
+        signals = page.evaluate(
+            """
+            () => ({
+              frames: Array.from(document.querySelectorAll('iframe')).slice(0, 50).map(el => [
+                el.getAttribute('src') || '',
+                el.getAttribute('title') || '',
+                el.getAttribute('name') || '',
+                el.id || ''
+              ].join(' ')),
+              fields: Array.from(document.querySelectorAll('input')).slice(0, 100).map(el => [
+                el.getAttribute('type') || '',
+                el.getAttribute('name') || '',
+                el.id || '',
+                el.getAttribute('autocomplete') || '',
+                el.getAttribute('aria-label') || ''
+              ].join(' '))
+            })
+            """
+        )
+    except Exception:
+        signals = {"frames": [], "fields": []}
+
+    if body_excerpt is None:
+        try:
+            body_excerpt = page.locator("body").inner_text(timeout=2000)
+        except Exception:
+            body_excerpt = ""
+
+    text = _normalize_text(body_excerpt)
+    frame_text = _normalize_text(" ".join(signals.get("frames") or []))
+    field_text = _normalize_text(" ".join(signals.get("fields") or []))
+
+    if "cloudflare" in text or "challenges.cloudflare.com" in frame_text or "cf-chl" in frame_text:
+        return {"code": "CLOUDFLARE", "reason": "Cloudflare human/security challenge detected"}
+
+    captcha_tokens = ("recaptcha", "hcaptcha", "turnstile", "captcha")
+    if any(token in frame_text for token in captcha_tokens) or any(token in text for token in captcha_tokens):
+        return {"code": "CAPTCHA", "reason": "Human verification/CAPTCHA detected"}
+    if any(phrase in text for phrase in ("verify you are human", "prove you are human", "human verification")):
+        return {"code": "CAPTCHA", "reason": "Human verification challenge detected"}
+
+    if "passkey" in text or "webauthn" in field_text:
+        return {"code": "PASSKEY", "reason": "Passkey authentication requires human interaction"}
+
+    if "one-time-code" in field_text or any(
+        phrase in text
+        for phrase in ("two-factor authentication", "two factor authentication", "2fa", "authenticator code", "verification code")
+    ):
+        return {"code": "TWO_FACTOR", "reason": "Two-factor or verification-code step detected"}
+
+    if any(token in field_text for token in ("cc-number", "cardnumber", "card-number")):
+        return {"code": "PAYMENT", "reason": "Payment card entry requires human approval"}
+
+    return None
+
+
 def snapshot_page(page: Page) -> dict[str, Any]:
     body = page.locator("body")
     try:
@@ -193,6 +257,7 @@ def snapshot_page(page: Page) -> dict[str, Any]:
         "title": page.title(),
         "body_excerpt": body_excerpt,
         "interactive": _interactive_snapshot(page),
+        "human_blocker": detect_human_blocker(page, body_excerpt),
     }
 
 
@@ -321,9 +386,17 @@ class BrowserRuntime:
         if len(actions) > MAX_ACTIONS:
             raise BrowserRuntimeError("TOO_MANY_ACTIONS", f"At most {MAX_ACTIONS} browser actions are allowed per plan")
 
-        self.navigate(url)
+        initial_page = self.navigate(url)
         assert self.page is not None
         evidence: list[dict[str, Any]] = []
+
+        if initial_page.get("human_blocker"):
+            return {
+                "ok": True,
+                "actions": evidence,
+                "page": initial_page,
+                "stopped_for_human": True,
+            }
 
         for index, action in enumerate(actions):
             if not isinstance(action, dict):
@@ -389,8 +462,18 @@ class BrowserRuntime:
                     f"Browser action {index} ({action_type}) failed for selector {selector!r}: {type(exc).__name__}",
                 ) from exc
 
+            current_page = snapshot_page(self.page)
+            if current_page.get("human_blocker"):
+                return {
+                    "ok": True,
+                    "actions": evidence,
+                    "page": current_page,
+                    "stopped_for_human": True,
+                }
+
         return {
             "ok": True,
             "actions": evidence,
             "page": snapshot_page(self.page),
+            "stopped_for_human": False,
         }
