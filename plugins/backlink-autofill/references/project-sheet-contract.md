@@ -29,7 +29,7 @@ Field rules:
 - `实测需登录`: blank until observed. Options: 需要 / 不需要.
 - `实测登录方式`: observed login method such as Google, GitHub, email/password, or other.
 - `实测限制`: observed platform constraint such as AI-only, reciprocal-link required, or other concrete rule.
-- `实测链接属性`: blank until a real live link is verified. Options: Follow / Nofollow / UGC / Sponsored / 混合.
+- `实测链接属性`: ONLY filled after public listing is verified live and the target `<a>` tag's `rel` attribute in the DOM is directly observed (Follow / Nofollow / UGC / Sponsored). If listing is not yet live, MUST stay blank. Prior research, BacklinkOS provenance, and submission pages MUST NEVER be used to infer this field.
 - `最后验证时间`: timestamp/date of the most recent direct verification.
 - `平台备注`: concise platform-level notes only; never project-specific execution status.
 
@@ -47,12 +47,15 @@ Field rules:
 - `外链ID`: foreign key to `外链总表`.
 - `平台域名`: copied for human readability; authoritative platform lookup still uses `外链ID`.
 - `状态`: execution state. Options: 待提交 / 处理中 / 已提交 / 审核中 / 已排期 / 已上线 / 需人工 / 失败 / 不适用.
+  - When a platform has an explicit future launch/publication/scheduled date (even if platform status copy says `Pending`), prioritize `已排期`.
+  - `审核中` applies only when pending review without an explicit scheduled date.
+  - `已上线` requires a verified, accessible public listing page where the project is live. Never mark `已上线` based solely on dashboard text without a verified public page.
 - `尝试次数`: increment only when a real browser execution attempt starts.
 - `最近操作时间`: latest execution/status-change timestamp.
 - `目标URL`: project page to promote; blank may mean use the project's canonical default URL when the project profile defines one.
-- `结果链接`: receipt, listing, profile, or live URL produced by the platform when available.
+- `结果链接`: ONLY public listing / live page URL accessible to users and search engines. Never write dashboard, admin, account, edit, payment, queue, confirmation, or auth URLs here. When public listing URL has not yet been generated, leave blank (dashboard/queue URLs belong in `证据摘要`).
 - `原因/备注`: concise reason for failure, human intervention, incompatibility, or other execution note.
-- `证据摘要`: short browser-observed evidence supporting the written status, e.g. `Submission received; pending review`.
+- `证据摘要`: short browser-observed evidence supporting the written status, e.g. `Submission received; pending review`. Preserves private dashboard/queue URLs as execution evidence when public listing URL is not yet generated.
 
 Do not duplicate project name, submit URL, SEO copy, keywords, separate submitted/live timestamps, or platform-link facts in this tab. Submit URL comes from `外链总表`; SEO/product content comes from the selected project profile; platform facts belong in `外链总表`.
 

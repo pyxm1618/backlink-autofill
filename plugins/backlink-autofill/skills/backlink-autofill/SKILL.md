@@ -30,11 +30,17 @@ Do not narrate every successful row. Interrupt the user only for a genuine human
 1. **Project selection is explicit.** Read `../../references/project-registry.json`. The user must name/select a project. Never infer it from the website, previous run, or the fact that only one project exists.
 2. **Project isolation is strict.** Read project-specific facts/assets only for the selected project. Mutate only Sheet rows whose `项目ID` exactly equals that selected project ID.
 3. **Browser action evidence is mandatory.** Never claim navigation, filling, clicking, uploading, submitting, login, or success from intention. A browser action must actually run and its returned state/read-back must support the claim.
-4. **Google Sheets is structured control data.** Never use browser automation to read or edit Google Sheets. Use the connected Google Drive/Sheets capability for bounded reads/searches and exact writes.
+4. **Browser and Control Plane are strictly separated.** Google Sheets is structured control data. Never use browser automation to read or edit Google Sheets. Browser runtime strictly forbids navigating to or mutating Google Sheets/Drive control plane URLs (`CONTROL_PLANE_URL_FORBIDDEN`). Use the official Google Drive/Sheets API/connector for bounded reads and exact writes. Every Sheet mutation must be verified by an immediate exact-row read-back.
 5. **Security challenges are human-only.** Never solve or bypass CAPTCHA, Cloudflare/Turnstile, 2FA, passkeys, SMS/phone verification, or similar controls.
 6. **Passwords are different.** Existing/primary account passwords, passcodes, tokens, secrets, API keys, session credentials, and security-challenge solutions must never be placed in chat, Google Sheets, project data, checkpoints, recipes, or browser action JSON. A confirmed **new backlink-platform account** may use an independently generated per-site password from the local credential store via `credential_fill`; the password value itself remains local and model-invisible.
 7. **No cross-project assets.** **Never search sibling project directories** for a logo, screenshot, contact, social URL, copy, keyword, or other project-specific value.
-8. **Evidence before status.** Never write success-like states (`已提交`, `审核中`, `已排期`, `已上线`) without browser-observed evidence.
+8. **Evidence & State Contract (Universal Invariants):**
+   - **Invariant 1: Prior research is discovery provenance, NOT observed facts.** Discovery sources, BacklinkOS tags, historical datasets, and manual research must NEVER populate `实测免费`, `实测需登录`, `实测登录方式`, `实测限制`, or `实测链接属性`. These fields require direct browser evidence from the current run.
+   - **Invariant 2: Observed link attribute (`实测链接属性`) requires live public DOM evidence.** `Follow`, `Nofollow`, `UGC`, or `Sponsored` can ONLY be written after the listing is verified live and the target `<a>` tag's `rel` attribute is inspected in the public page DOM. If unverified or not yet live, it MUST remain blank.
+   - **Invariant 3: Public result URL must be an accessible public page.** `项目外链管理.结果链接` must NEVER contain private URLs (dashboard, admin, account, edit, payment, queue, confirmation, auth). If no public listing URL is yet generated, `结果链接` MUST remain blank, and the private dashboard/queue URL may only be recorded in `证据摘要` as execution evidence.
+   - **Invariant 4: Classify status by strongest verified evidence.** If an explicit future launch/publication/scheduled date exists, prioritize `已排期` over `Pending` or `审核中`. Never classify as `已上线` without a verified, accessible public listing page.
+   - **Invariant 5: Browser runtime strictly rejects control plane URLs.** Navigating Playwright/CDP to `docs.google.com` or `sheets.google.com` is forbidden at runtime (`CONTROL_PLANE_URL_FORBIDDEN`).
+   - **Invariant 6: Unknown facts remain blank.** Never guess or infer missing platform attributes.
 
 ## Private runtime model
 
@@ -259,43 +265,43 @@ When the user completes the human step in the visible Chrome window and asks to 
 
 ### 10. Classify outcome from evidence
 
-Use strongest real evidence:
+Classify status strictly according to the strongest verifiable browser evidence (Invariant 4):
 
-- `已上线` — listing/result verified live;
-- `已排期` — explicit scheduled publication/launch;
-- `审核中` — explicit review/moderation pending;
-- `已提交` — final submission confirmed/received with no stronger state;
-- `不适用` — observed eligibility/payment/product constraint;
-- `失败` — concrete execution failure with no evidence of successful submission;
-- `需人工` — human-only blocker or ambiguous post-submit outcome.
+- `已上线` — Target listing is verified live on a public page (`public_listing_url` is verified and accessible). A dashboard stating "Live" or "Active" without an accessible public listing page MUST NEVER be marked as `已上线`.
+- `已排期` — An explicit future publication, launch, or scheduled date exists (e.g. `2027-03-25`, or "Scheduled for X date"). Explicit scheduled date ALWAYS takes precedence over generic "Pending", "Queue", or "Under review" status text.
+- `审核中` — Formally submitted and awaiting review/moderation (status contains "Pending", "Review", "Moderation", "审核", "等待"), AND no specific future scheduled date has been assigned.
+- `已提交` — Final submission action confirmed/received, but review, scheduling, or live status is undetermined.
+- `不适用` — Observed eligibility, payment, product constraint, or policy incompatibility (e.g. non-free with no free path, AI-only constraint not met).
+- `失败` — Concrete execution failure with verified evidence that no submission was accepted.
+- `需人工` — Human-only blocker (Email OTP, CAPTCHA, 2FA, SMS, phone verification, payment) or ambiguous post-submit outcome.
 
 If final Submit was clicked but outcome is ambiguous, use `需人工` with `已执行提交但结果不明确，避免重复提交`; never auto-retry.
 
-`证据摘要` must be short and factual.
+`证据摘要` must be short, factual, and capture observable state.
 
 ### 11. Update exact project row
 
-Normally update only:
-- `状态`;
-- `最近操作时间`;
-- `结果链接` when observed;
-- `原因/备注` when needed;
-- `证据摘要`.
+When updating `项目外链管理`:
+- `状态`: Must match the classified status above.
+- `最近操作时间`: Current ISO timestamp (`YYYY-MM-DDTHH:MM:SSZ`).
+- `结果链接`: Must run through `sanitize_result_url`. ONLY public listing URLs accessible to external visitors and search engines may be written here. Dashboard, admin, account, edit, payment, queue, confirmation, and auth URLs must NEVER be written to `结果链接`. If no public listing URL has been generated, leave blank; any private dashboard/queue URL may only be appended to `证据摘要` as execution evidence (Invariant 3).
+- `原因/备注`: Concise human-readable note explaining the status or blocker.
+- `证据摘要`: Short factual evidence observed in browser.
 
-Then **Re-read the exact row after every Sheet mutation** and verify it. Never mutate another project's row.
+**Always re-read the exact row immediately after every Sheet mutation** and verify values. Never mutate another project's row.
 
 ### 12. Enrich master facts from direct observation only
 
-Update matching `外链总表` row only with facts directly observed:
-- `实测免费`;
-- `实测需登录`;
-- `实测登录方式`;
-- `实测限制`;
-- `实测链接属性` only after real live-link/HTML evidence;
-- `最后验证时间`;
-- concise platform notes.
+Update matching `外链总表` row ONLY with facts directly observed during the current execution (Invariant 1 & 6):
+- `实测免费`: `免费` / `非免费` / `混合` (only if directly observed in pricing/form).
+- `实测需登录`: `需要` / `不需要` (only if directly observed).
+- `实测登录方式`: Directly observed login method (e.g. `Google OAuth`, `Email/Password`, `GitHub`).
+- `实测限制`: Directly observed constraints (e.g. reciprocal backlink required, queue waiting time).
+- `实测链接属性`: ONLY populated if the listing is verified live AND the target `<a>` tag's `rel` attribute in the live DOM is directly inspected (`Follow`, `Nofollow`, `UGC`, `Sponsored`). If listing is pending, queued, under review, scheduled, or unverified, this field MUST remain blank (Invariant 2).
+- `最后验证时间`: Current ISO timestamp when facts were observed.
+- `平台备注`: Concise factual notes on observed platform behavior.
 
-Unknowns remain blank. Project-specific status/result URL never propagates to other projects.
+Prior research, discovery provenance (e.g. `BacklinkOS/已确认免费Follow`), and historical notes must NEVER populate `实测*` fields. Unknown facts remain blank; never guess. Project-specific status or result URL must never leak to other projects.
 
 ### 13. Save/refresh domain recipe
 

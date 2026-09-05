@@ -54,12 +54,26 @@ class BrowserRuntimeError(RuntimeError):
         self.message = message
 
 
+FORBIDDEN_CONTROL_PLANE_DOMAINS = (
+    "docs.google.com",
+    "drive.google.com",
+    "sheets.google.com",
+    "spreadsheets.google.com",
+)
+
+
 def _validate_http_url(url: str) -> str:
     if not isinstance(url, str) or not url.strip():
         raise BrowserRuntimeError("INVALID_URL", "URL must be a non-empty http(s) URL")
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise BrowserRuntimeError("INVALID_URL", "Only absolute http(s) URLs are allowed")
+    hostname = (parsed.hostname or "").lower()
+    if any(hostname == d or hostname.endswith("." + d) for d in FORBIDDEN_CONTROL_PLANE_DOMAINS):
+        raise BrowserRuntimeError(
+            "CONTROL_PLANE_URL_FORBIDDEN",
+            "Browser Runtime must not be used to navigate to or mutate Google Sheets/Drive control plane",
+        )
     return url.strip()
 
 

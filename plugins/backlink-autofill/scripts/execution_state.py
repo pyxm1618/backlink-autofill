@@ -62,6 +62,223 @@ def internal_to_sheet_status(value: str) -> str:
         raise ValueError(f"unknown internal status: {value}") from exc
 
 
+class EvidenceContractError(ValueError):
+    """Raised when evidence violates the universal Evidence & State Contract."""
+    pass
+
+
+FORBIDDEN_RESULT_URL_SEGMENTS = (
+    "dashboard",
+    "admin",
+    "account",
+    "edit",
+    "payment",
+    "checkout",
+    "confirm",
+    "confirmation",
+    "queue",
+    "login",
+    "signin",
+    "auth",
+    "setting",
+    "settings",
+)
+
+
+def sanitize_result_url(url: str | None) -> str:
+    """Validate and sanitize a public result URL.
+
+    Invariant 3: 项目外链管理.结果链接 can only be a real public page URL
+    accessible to users and search engines. Dashboard, admin, account,
+    edit, payment, queue, confirmation, and auth URLs must never be
+    written to 结果链接; if no public listing URL has been generated,
+    return an empty string.
+    """
+    if not url or not isinstance(url, str):
+        return ""
+    raw = url.strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+
+    combined = f"{parsed.path.lower()}?{parsed.query.lower()}"
+    for segment in FORBIDDEN_RESULT_URL_SEGMENTS:
+        pattern = rf"(^|[/_?&=-]){re.escape(segment)}([/_?&=-]|$)"
+        if re.search(pattern, combined):
+            return ""
+
+    return raw
+
+
+def classify_project_status(evidence: dict[str, Any], strict: bool = False) -> str:
+    """Classify project backlink status based on the strongest verifiable evidence.
+
+    Invariant 4:
+    - 已排期: Explicit future launch/publication/scheduled date exists.
+              Takes precedence over 'Pending' or 'Under review'.
+    - 审核中: Explicitly pending review, AND no specific future scheduled date.
+    - 已提交: Final submit confirmed, but review/scheduling undetermined.
+    - 已上线: Requires verifiable public listing URL and page accessible.
+              Dashboard stating 'Live' without a public listing is NOT enough.
+    - 需人工: Human blocker or ambiguous submit outcome.
+    - 失败: Explicit execution failure.
+    - 不适用: Incompatible platform criteria.
+    """
+    if not isinstance(evidence, dict):
+        raise ValueError("evidence must be a dictionary")
+
+    if evidence.get("human_blocker"):
+        return "需人工"
+    if evidence.get("failed"):
+        return "失败"
+    if evidence.get("not_applicable"):
+        return "不适用"
+
+    status_text = str(evidence.get("platform_status_text") or "").lower()
+    claims_live = (
+        status_text in {"live", "published", "active"}
+        or evidence.get("live", False)
+    )
+    public_url = sanitize_result_url(evidence.get("public_listing_url"))
+    public_verified = bool(evidence.get("public_listing_verified", False))
+
+    if public_url and public_verified:
+        return "已上线"
+
+    if claims_live:
+        if strict:
+            raise EvidenceContractError(
+                "Cannot classify as 已上线: public listing URL is missing or unverified"
+            )
+        if evidence.get("scheduled_date"):
+            return "已排期"
+        if evidence.get("final_submit_occurred") or status_text:
+            return "审核中"
+        return "待提交"
+
+    # Invariant 4: Explicit scheduled/launch date prioritizes 已排期
+    sched_date = str(evidence.get("scheduled_date") or "").strip()
+    if sched_date:
+        return "已排期"
+
+    review_keywords = ("pending", "review", "approval", "moderation", "审核", "等待")
+    if any(kw in status_text for kw in review_keywords) or evidence.get("under_review"):
+        return "审核中"
+
+    if evidence.get("final_submit_occurred") or evidence.get("submitted"):
+        return "已提交"
+
+    return "待提交"
+
+
+def enrich_master_facts(
+    prior_facts: dict[str, Any] | None,
+    observed: dict[str, Any],
+) -> dict[str, str]:
+    """Enrich master backlink facts using ONLY direct observations from current execution.
+
+    Invariant 1: Prior research/discovery provenance must NEVER populate observed fields.
+    Invariant 2: 实测链接属性 must come from live public listing DOM; otherwise empty.
+    Invariant 6: Leave unknown fields blank, never guess.
+    """
+    if not isinstance(observed, dict):
+        raise ValueError("observed must be a dictionary of browser observations")
+
+    res = {
+        "实测免费": "",
+        "实测需登录": "",
+        "实测登录方式": "",
+        "实测限制": "",
+        "实测链接属性": "",
+        "最后验证时间": "",
+        "平台备注": "",
+    }
+
+    if "free" in observed:
+        free_val = observed["free"]
+        if free_val is True or str(free_val).lower() in {"true", "免费", "yes"}:
+            res["实测免费"] = "免费"
+        elif free_val is False or str(free_val).lower() in {"false", "非免费", "no"}:
+            res["实测免费"] = "非免费"
+        elif str(free_val).lower() in {"混合", "mixed"}:
+            res["实测免费"] = "混合"
+
+    if "requires_login" in observed:
+        req = observed["requires_login"]
+        if req is True or str(req).lower() in {"true", "需要", "yes"}:
+            res["实测需登录"] = "需要"
+        elif req is False or str(req).lower() in {"false", "不需要", "no"}:
+            res["实测需登录"] = "不需要"
+
+    if "login_method" in observed and observed["login_method"]:
+        res["实测登录方式"] = str(observed["login_method"]).strip()
+
+    if "limits" in observed and observed["limits"]:
+        res["实测限制"] = str(observed["limits"]).strip()
+
+    if observed.get("listing_live") is True and observed.get("live_dom_rel") is not None:
+        rel = str(observed["live_dom_rel"]).lower()
+        if "nofollow" in rel:
+            res["实测链接属性"] = "Nofollow"
+        elif "ugc" in rel:
+            res["实测链接属性"] = "UGC"
+        elif "sponsored" in rel:
+            res["实测链接属性"] = "Sponsored"
+        else:
+            res["实测链接属性"] = "Follow"
+    else:
+        res["实测链接属性"] = ""
+
+    if any(res[k] for k in ("实测免费", "实测需登录", "实测登录方式", "实测限制", "实测链接属性")):
+        res["最后验证时间"] = str(observed.get("verified_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+
+    if "notes" in observed and observed["notes"]:
+        res["平台备注"] = str(observed["notes"]).strip()
+    elif prior_facts and prior_facts.get("平台备注"):
+        res["平台备注"] = str(prior_facts["平台备注"]).strip()
+
+    return res
+
+
+def build_project_row_update(
+    status: str,
+    raw_result_url: str | None = None,
+    evidence_summary: str = "",
+    reason: str = "",
+    target_url: str = "",
+    attempt_count: int | None = None,
+    now_iso: str | None = None,
+) -> dict[str, Any]:
+    """Build a validated project row mutation payload adhering to the contract.
+
+    Invariant 3: Filters private/dashboard/queue URLs out of 结果链接.
+    Invariant 6: Does not infer unknown facts.
+    """
+    if status not in SHEET_TO_INTERNAL:
+        raise ValueError(f"invalid sheet status: {status!r}")
+
+    sanitized_url = sanitize_result_url(raw_result_url)
+    updated_evidence = str(evidence_summary or "").strip()
+
+    if raw_result_url and not sanitized_url:
+        stripped_raw = raw_result_url.strip()
+        if stripped_raw and stripped_raw not in updated_evidence:
+            notice = f"[页面证据: {stripped_raw}；公开 listing URL 尚未生成]"
+            updated_evidence = f"{updated_evidence} {notice}".strip()
+
+    return {
+        "状态": status,
+        "尝试次数": str(attempt_count) if attempt_count is not None else "",
+        "最近操作时间": now_iso or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "目标URL": target_url.strip(),
+        "结果链接": sanitized_url,
+        "原因/备注": reason.strip(),
+        "证据摘要": updated_evidence,
+    }
+
+
 def _normalize_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value).lower())
 
