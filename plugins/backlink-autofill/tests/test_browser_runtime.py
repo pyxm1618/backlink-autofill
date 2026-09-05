@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -64,7 +65,9 @@ class BrowserRuntimeTests(unittest.TestCase):
             self.assertIn("#logo", by_selector)
             self.assertIn("#submit", by_selector)
             self.assertEqual(by_selector["#password"]["sensitive"], True)
+            self.assertEqual(by_selector["#confirm-password"]["sensitive"], True)
             self.assertNotIn("value", by_selector["#password"])
+            self.assertNotIn("value", by_selector["#confirm-password"])
             self.assertLessEqual(len(result["page"]["body_excerpt"]), 4000)
 
     def test_passive_recaptcha_disclosure_does_not_trigger_human_handoff(self):
@@ -90,10 +93,10 @@ class BrowserRuntimeTests(unittest.TestCase):
             logo.write_bytes(b"test-image-bytes")
 
             actions = [
-                {"type": "fill", "selector": "#name", "value": "Tachyon Wang"},
-                {"type": "fill", "selector": "#email", "value": "pyxm1618@gmail.com"},
-                {"type": "fill", "selector": "#website", "value": "https://quickiching.com/"},
-                {"type": "fill", "selector": "#description", "value": "Free online I Ching casting and hexagram reading tool."},
+                {"type": "fill", "selector": "#name", "value": "Test User"},
+                {"type": "fill", "selector": "#email", "value": "test@example.com"},
+                {"type": "fill", "selector": "#website", "value": "https://example.com/"},
+                {"type": "fill", "selector": "#description", "value": "A test listing."},
                 {"type": "select", "selector": "#category", "value": "Reference"},
                 {"type": "check", "selector": "#agree"},
                 {"type": "upload", "selector": "#logo", "path": str(logo)},
@@ -125,6 +128,55 @@ class BrowserRuntimeTests(unittest.TestCase):
             )
             persisted = json.loads(inspect_again.stdout)
             self.assertIn("Previous session present", persisted["page"]["body_excerpt"])
+
+    def test_generated_site_password_can_fill_password_and_confirmation_without_leaking_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "profile"
+            credential_root = root / "credentials"
+            actions = [
+                {
+                    "type": "credential_fill",
+                    "selector": "#password",
+                    "credential": "site_password",
+                    "mode": "create_or_reuse",
+                    "account": "test@example.com",
+                },
+                {
+                    "type": "credential_fill",
+                    "selector": "#confirm-password",
+                    "credential": "site_password",
+                    "mode": "create_or_reuse",
+                    "account": "test@example.com",
+                },
+                {"type": "submit", "selector": "#submit"},
+            ]
+
+            proc = self.run_cli(
+                "execute",
+                "--profile-dir", str(profile),
+                "--browser-channel", "chromium",
+                "--credential-root", str(credential_root),
+                "--url", f"{self.base_url}/form.html",
+                "--actions-json", json.dumps(actions),
+            )
+            result = json.loads(proc.stdout)
+            self.assertEqual(result["ok"], True)
+            self.assertIn("Submission received", result["page"]["body_excerpt"])
+
+            credential_files = list(credential_root.glob("*.json"))
+            self.assertEqual(len(credential_files), 1)
+            stored = json.loads(credential_files[0].read_text())
+            password = stored["password"]
+            self.assertGreaterEqual(len(password), 20)
+            self.assertNotIn(password, proc.stdout)
+            self.assertNotIn(password, proc.stderr)
+            self.assertEqual(credential_files[0].stat().st_mode & 0o777, 0o600)
+            self.assertEqual(credential_root.stat().st_mode & 0o777, 0o700)
+
+            credential_actions = [item for item in result["actions"] if item["type"] == "credential_fill"]
+            self.assertEqual(len(credential_actions), 2)
+            self.assertTrue(all(item["readback"] == {"credential": "site_password", "verified": True} for item in credential_actions))
 
     def test_password_fill_is_refused_without_echoing_secret(self):
         with tempfile.TemporaryDirectory() as tmp:
