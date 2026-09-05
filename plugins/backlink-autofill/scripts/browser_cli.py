@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_start_parser.add_argument("--browser-channel", default="chrome")
     handoff_start_parser.add_argument("--url", required=True)
     handoff_start_parser.add_argument("--allowed-upload-root")
+    handoff_start_parser.add_argument("--credential-root")
     handoff_start_parser.add_argument("--replay-actions-json", default="[]")
     _add_handoff_identity(handoff_start_parser)
 
@@ -127,6 +128,7 @@ def main() -> int:
                 handoff_id=args.handoff_id,
                 replay_actions=replay,
                 allowed_upload_root=Path(args.allowed_upload_root) if args.allowed_upload_root else None,
+                credential_root=Path(args.credential_root) if args.credential_root else None,
             )
 
         elif args.command == "handoff-status":
