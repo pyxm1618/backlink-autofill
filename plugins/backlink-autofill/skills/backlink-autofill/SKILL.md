@@ -37,10 +37,11 @@ Do not narrate every successful row. Interrupt the user only for a genuine human
 8. **Evidence & State Contract (Universal Invariants):**
    - **Invariant 1: Prior research is discovery provenance, NOT observed facts.** Discovery sources, BacklinkOS tags, historical datasets, and manual research must NEVER populate `实测免费`, `实测需登录`, `实测登录方式`, `实测限制`, or `实测链接属性`. These fields require direct browser evidence from the current run.
    - **Invariant 2: Observed link attribute (`实测链接属性`) requires live public DOM evidence.** `Follow`, `Nofollow`, `UGC`, or `Sponsored` can ONLY be written after the listing is verified live and the target `<a>` tag's `rel` attribute is inspected in the public page DOM. If unverified or not yet live, it MUST remain blank.
-   - **Invariant 3: Public result URL must be an accessible public page.** `项目外链管理.结果链接` must NEVER contain private URLs (dashboard, admin, account, edit, payment, queue, confirmation, auth). If no public listing URL is yet generated, `结果链接` MUST remain blank, and the private dashboard/queue URL may only be recorded in `证据摘要` as execution evidence.
+   - **Invariant 3: Public result URL requires verified public page and positive evidence.** `项目外链管理.结果链接` must NEVER contain private URLs (dashboard, admin, account, edit, payment, queue, confirmation, auth). Absence of blacklist keywords is NOT sufficient: the URL MUST have positive verification confirming public accessibility without authentication (`public_access_verified`) and accurate product identity (`listing_identity_verified`). If positive evidence is missing or unverified, `结果链接` MUST remain blank, and the private dashboard/queue URL may only be recorded in `证据摘要` as execution evidence.
    - **Invariant 4: Classify status by strongest verified evidence.** If an explicit future launch/publication/scheduled date exists, prioritize `已排期` over `Pending` or `审核中`. Never classify as `已上线` without a verified, accessible public listing page.
    - **Invariant 5: Browser runtime strictly rejects control plane URLs.** Navigating Playwright/CDP to `docs.google.com` or `sheets.google.com` is forbidden at runtime (`CONTROL_PLANE_URL_FORBIDDEN`).
    - **Invariant 6: Unknown facts remain blank.** Never guess or infer missing platform attributes.
+9. **Mandatory Production Mutation Gate.** Before any Sheet mutation is written to `项目外链管理` or `外链总表`, the update payload MUST pass through the unified Evidence Contract validator (`browser_cli.py validate-project-mutation` / `validate-master-mutation` or `ProductionSheetGate`). Any direct write bypassing this validator is strictly forbidden.
 
 ## Private runtime model
 
@@ -281,10 +282,16 @@ If final Submit was clicked but outcome is ambiguous, use `需人工` with `已�
 
 ### 11. Update exact project row
 
-When updating `项目外链管理`:
-- `状态`: Must match the classified status above.
+Before writing to `项目外链管理`, pass the payload and browser evidence through the production gate:
+```bash
+python3 plugins/backlink-autofill/scripts/browser_cli.py validate-project-mutation \
+  --evidence-json '<evidence_json>' \
+  --proposed-json '<proposed_json>'
+```
+The validator strictly enforces:
+- `状态`: Must match the classified status from evidence.
 - `最近操作时间`: Current ISO timestamp (`YYYY-MM-DDTHH:MM:SSZ`).
-- `结果链接`: Must run through `sanitize_result_url`. ONLY public listing URLs accessible to external visitors and search engines may be written here. Dashboard, admin, account, edit, payment, queue, confirmation, and auth URLs must NEVER be written to `结果链接`. If no public listing URL has been generated, leave blank; any private dashboard/queue URL may only be appended to `证据摘要` as execution evidence (Invariant 3).
+- `结果链接`: Must run through `sanitize_result_url` with positive evidence. ONLY public listing URLs accessible to external visitors and search engines may be written here. Dashboard, admin, account, edit, payment, queue, confirmation, and auth URLs must NEVER be written to `结果链接`. If no public listing URL has been positively verified, leave blank; any private dashboard/queue URL may only be appended to `证据摘要` as execution evidence (Invariant 3).
 - `原因/备注`: Concise human-readable note explaining the status or blocker.
 - `证据摘要`: Short factual evidence observed in browser.
 
@@ -292,7 +299,14 @@ When updating `项目外链管理`:
 
 ### 12. Enrich master facts from direct observation only
 
-Update matching `外链总表` row ONLY with facts directly observed during the current execution (Invariant 1 & 6):
+Before updating `外链总表`, pass facts and browser evidence through the production gate:
+```bash
+python3 plugins/backlink-autofill/scripts/browser_cli.py validate-master-mutation \
+  --evidence-json '<evidence_json>' \
+  --prior-json '<prior_facts_json>' \
+  --proposed-json '<proposed_json>'
+```
+The validator strictly enforces direct observations only (Invariant 1 & 6):
 - `实测免费`: `免费` / `非免费` / `混合` (only if directly observed in pricing/form).
 - `实测需登录`: `需要` / `不需要` (only if directly observed).
 - `实测登录方式`: Directly observed login method (e.g. `Google OAuth`, `Email/Password`, `GitHub`).

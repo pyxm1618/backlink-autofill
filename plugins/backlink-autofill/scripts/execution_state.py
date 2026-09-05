@@ -85,14 +85,23 @@ FORBIDDEN_RESULT_URL_SEGMENTS = (
 )
 
 
-def sanitize_result_url(url: str | None) -> str:
+def sanitize_result_url(
+    url: str | None,
+    evidence: dict[str, Any] | None = None,
+    public_access_verified: bool | None = None,
+    listing_identity_verified: bool | None = None,
+) -> str:
     """Validate and sanitize a public result URL.
 
-    Invariant 3: 项目外链管理.结果链接 can only be a real public page URL
-    accessible to users and search engines. Dashboard, admin, account,
-    edit, payment, queue, confirmation, and auth URLs must never be
-    written to 结果链接; if no public listing URL has been generated,
-    return an empty string.
+    Invariant 3 & Positive Evidence Rule:
+    - 项目外链管理.结果链接 can only be a real public page URL
+      accessible to users and search engines.
+    - Blacklist keywords (dashboard, admin, account, etc.) are only an
+      auxiliary defense. Absence of blacklist keywords is NOT sufficient.
+    - The URL MUST have positive verifiable evidence confirming both:
+      1) public access without authentication (public_access_verified)
+      2) accurate product/listing identity (listing_identity_verified)
+    - If positive evidence is missing or negative, return an empty string.
     """
     if not url or not isinstance(url, str):
         return ""
@@ -103,11 +112,37 @@ def sanitize_result_url(url: str | None) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
 
+    # Auxiliary defense: blacklist segments
     combined = f"{parsed.path.lower()}?{parsed.query.lower()}"
     for segment in FORBIDDEN_RESULT_URL_SEGMENTS:
         pattern = rf"(^|[/_?&=-]){re.escape(segment)}([/_?&=-]|$)"
         if re.search(pattern, combined):
             return ""
+
+    # Positive evidence validation
+    if public_access_verified is not None:
+        has_public_access = bool(public_access_verified)
+    elif isinstance(evidence, dict):
+        has_public_access = bool(
+            evidence.get("public_access_verified", False)
+            or (evidence.get("public_listing_verified", False) and evidence.get("public_access_verified") is not False)
+        )
+    else:
+        has_public_access = False
+
+    if listing_identity_verified is not None:
+        has_identity_match = bool(listing_identity_verified)
+    elif isinstance(evidence, dict):
+        has_identity_match = bool(
+            evidence.get("listing_identity_verified", False)
+            or evidence.get("target_identity_verified", False)
+            or (evidence.get("public_listing_verified", False) and evidence.get("listing_identity_verified") is not False)
+        )
+    else:
+        has_identity_match = False
+
+    if not (has_public_access and has_identity_match):
+        return ""
 
     return raw
 
@@ -141,8 +176,8 @@ def classify_project_status(evidence: dict[str, Any], strict: bool = False) -> s
         status_text in {"live", "published", "active"}
         or evidence.get("live", False)
     )
-    public_url = sanitize_result_url(evidence.get("public_listing_url"))
     public_verified = bool(evidence.get("public_listing_verified", False))
+    public_url = sanitize_result_url(evidence.get("public_listing_url"), evidence=evidence)
 
     if public_url and public_verified:
         return "已上线"
@@ -171,6 +206,134 @@ def classify_project_status(evidence: dict[str, Any], strict: bool = False) -> s
         return "已提交"
 
     return "待提交"
+
+
+class ProductionSheetGate:
+    """Production Hard Gate for all Google Sheet mutations.
+
+    Enforces universal invariants so that NO submission workflow can write
+    invalid, speculative, or private data to the control plane.
+    """
+
+    @staticmethod
+    def validate_project_mutation(
+        evidence: dict[str, Any],
+        proposed: dict[str, Any],
+        strict_schedule: bool = False,
+    ) -> dict[str, Any]:
+        """Validate and normalize a project sheet mutation payload.
+
+        Enforces:
+        - Rejection of dashboard/admin/private URLs in 结果链接.
+        - Rejection of unverified URLs in 结果链接 (requires positive evidence).
+        - Rejection of 已上线 without verified public listing.
+        - Normalization or rejection of scheduled_date + 审核中.
+        """
+        if not isinstance(evidence, dict):
+            raise EvidenceContractError("evidence must be a dictionary")
+        if not isinstance(proposed, dict):
+            raise EvidenceContractError("proposed mutation must be a dictionary")
+
+        status = proposed.get("状态")
+        if not status or status not in SHEET_TO_INTERNAL:
+            raise EvidenceContractError(f"invalid or missing sheet status: {status!r}")
+
+        raw_result_url = proposed.get("结果链接")
+        if raw_result_url:
+            raw_str = str(raw_result_url).strip()
+            if raw_str:
+                # 1. Blacklist check
+                parsed = urlparse(raw_str)
+                combined = f"{parsed.path.lower()}?{parsed.query.lower()}"
+                for segment in FORBIDDEN_RESULT_URL_SEGMENTS:
+                    pattern = rf"(^|[/_?&=-]){re.escape(segment)}([/_?&=-]|$)"
+                    if re.search(pattern, combined):
+                        raise EvidenceContractError(
+                            f"REJECTED: Private/dashboard URL {raw_str!r} cannot be written to 结果链接"
+                        )
+
+                # 2. Positive evidence check
+                sanitized = sanitize_result_url(raw_str, evidence=evidence)
+                if not sanitized:
+                    raise EvidenceContractError(
+                        f"REJECTED: 结果链接 {raw_str!r} lacks positive verification (public_access_verified and listing_identity_verified)"
+                    )
+
+        # Gate 3: Claims 已上线 without verified public listing
+        if status == "已上线":
+            has_public_listing = bool(
+                evidence.get("public_listing_verified")
+                and evidence.get("public_listing_url")
+                and sanitize_result_url(evidence.get("public_listing_url"), evidence=evidence)
+            )
+            if not has_public_listing:
+                raise EvidenceContractError(
+                    "REJECTED: Cannot set status to 已上线 without verified public listing URL"
+                )
+
+        # Gate 4: scheduled_date exists + proposed 审核中
+        sched_date = str(evidence.get("scheduled_date") or "").strip()
+        if sched_date:
+            if status == "审核中":
+                if strict_schedule:
+                    raise EvidenceContractError(
+                        f"REJECTED: Platform has scheduled date {sched_date}; status must be 已排期, not 审核中"
+                    )
+                status = "已排期"
+
+        result = dict(proposed)
+        result["状态"] = status
+        if raw_result_url:
+            result["结果链接"] = sanitize_result_url(raw_result_url, evidence=evidence)
+        else:
+            result["结果链接"] = ""
+        return result
+
+    @staticmethod
+    def validate_master_mutation(
+        evidence: dict[str, Any],
+        prior_facts: dict[str, Any] | None,
+        proposed: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate a master sheet (外链总表) mutation payload.
+
+        Enforces:
+        - Rejection of 实测链接属性 when listing is not live or DOM rel uninspected.
+        - Rejection of historical/prior data populating 实测* fields without current observation.
+        """
+        if not isinstance(evidence, dict):
+            raise EvidenceContractError("evidence must be a dictionary")
+        if not isinstance(proposed, dict):
+            raise EvidenceContractError("proposed mutation must be a dictionary")
+
+        # Gate 1: listing not live + 实测链接属性=Follow/Nofollow/etc -> REJECT
+        observed_rel = proposed.get("实测链接属性")
+        if observed_rel:
+            listing_live = evidence.get("listing_live") is True
+            has_dom_rel = evidence.get("live_dom_rel") is not None
+            if not (listing_live and has_dom_rel):
+                raise EvidenceContractError(
+                    f"REJECTED: 实测链接属性 cannot be set to {observed_rel!r} without live listing and inspected DOM rel"
+                )
+
+        # Gate 5: Prior/historical facts attempting to populate 实测* -> REJECT
+        observed_field_keys = {
+            "实测免费": "free",
+            "实测需登录": "requires_login",
+            "实测登录方式": "login_method",
+            "实测限制": "limits",
+            "实测链接属性": "live_dom_rel",
+        }
+        for field, evidence_key in observed_field_keys.items():
+            val = proposed.get(field)
+            if val:
+                # Must have direct observation evidence in current execution
+                if evidence_key not in evidence and field not in evidence:
+                    raise EvidenceContractError(
+                        f"REJECTED: {field} was populated without direct observation in current execution evidence"
+                    )
+
+        return dict(proposed)
 
 
 def enrich_master_facts(

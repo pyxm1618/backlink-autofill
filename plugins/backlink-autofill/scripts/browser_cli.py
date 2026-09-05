@@ -11,7 +11,13 @@ from pathlib import Path
 try:
     from browser_handoff import HandoffError, handoff_status, request_handoff_finish, start_handoff
     from browser_runtime import BrowserRuntime, BrowserRuntimeError
-    from execution_state import clear_human_pending, list_human_pending, resolve_human_pending
+    from execution_state import (
+        clear_human_pending,
+        list_human_pending,
+        resolve_human_pending,
+        ProductionSheetGate,
+        EvidenceContractError,
+    )
 except ModuleNotFoundError as exc:
     print(
         json.dumps(
@@ -87,6 +93,16 @@ def build_parser() -> argparse.ArgumentParser:
     pending_clear_parser.add_argument("--project-id", required=True)
     pending_clear_parser.add_argument("--backlink-id", required=True)
     pending_clear_parser.add_argument("--admin-override", action="store_true", help="Explicit administrative confirmation")
+
+    val_proj_parser = subparsers.add_parser("validate-project-mutation")
+    val_proj_parser.add_argument("--evidence-json", required=True)
+    val_proj_parser.add_argument("--proposed-json", required=True)
+    val_proj_parser.add_argument("--strict-schedule", action="store_true")
+
+    val_master_parser = subparsers.add_parser("validate-master-mutation")
+    val_master_parser.add_argument("--evidence-json", required=True)
+    val_master_parser.add_argument("--prior-json", default="{}")
+    val_master_parser.add_argument("--proposed-json", required=True)
 
     return parser
 
@@ -209,12 +225,41 @@ def main() -> int:
                 handoff_id=args.handoff_id,
             )
 
+        elif args.command == "validate-project-mutation":
+            try:
+                evidence = json.loads(args.evidence_json)
+                proposed = json.loads(args.proposed_json)
+            except json.JSONDecodeError:
+                return _emit_error("INVALID_JSON", "evidence-json and proposed-json must be valid JSON")
+            validated = ProductionSheetGate.validate_project_mutation(
+                evidence=evidence,
+                proposed=proposed,
+                strict_schedule=args.strict_schedule,
+            )
+            result = {"ok": True, "validated": validated}
+
+        elif args.command == "validate-master-mutation":
+            try:
+                evidence = json.loads(args.evidence_json)
+                prior = json.loads(args.prior_json) if args.prior_json else {}
+                proposed = json.loads(args.proposed_json)
+            except json.JSONDecodeError:
+                return _emit_error("INVALID_JSON", "evidence-json, prior-json and proposed-json must be valid JSON")
+            validated = ProductionSheetGate.validate_master_mutation(
+                evidence=evidence,
+                prior_facts=prior,
+                proposed=proposed,
+            )
+            result = {"ok": True, "validated": validated}
+
         else:
             return _emit_error("INVALID_COMMAND", "unsupported command")
 
         print(json.dumps(result, ensure_ascii=False))
         return 0
 
+    except EvidenceContractError as exc:
+        return _emit_error("EVIDENCE_CONTRACT_VIOLATION", str(exc))
     except BrowserRuntimeError as exc:
         return _emit_error(exc.code, exc.message)
     except HandoffError as exc:

@@ -70,7 +70,7 @@ class BrowserHandoffTests(unittest.TestCase):
         self.fail(f"handoff did not reach {wanted}; last={last}")
 
     def test_challenge_is_detected_as_human_blocker(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             profile = Path(tmp) / "profile"
             proc = self.run_cli(
                 "inspect",
@@ -85,7 +85,7 @@ class BrowserHandoffTests(unittest.TestCase):
             self.assertIn("human", blocker["reason"].lower())
 
     def test_headed_handoff_runs_detached_restores_fields_and_releases_profile(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             profile = root / "profile"
             handoff_root = root / "handoffs"
@@ -138,7 +138,7 @@ class BrowserHandoffTests(unittest.TestCase):
             self.assertEqual(json.loads(inspect_again.stdout)["ok"], True)
 
     def test_headed_handoff_can_replay_generated_site_password_without_leaking_it(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             profile = root / "profile"
             handoff_root = root / "handoffs"
