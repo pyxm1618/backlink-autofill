@@ -134,6 +134,61 @@ class BrowserHandoffTests(unittest.TestCase):
             )
             self.assertEqual(json.loads(inspect_again.stdout)["ok"], True)
 
+    def test_headed_handoff_can_replay_generated_site_password_without_leaking_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "profile"
+            handoff_root = root / "handoffs"
+            credential_root = root / "credentials"
+            handoff_id = "credential-row-2"
+            replay = [
+                {"type": "fill", "selector": "#email", "value": "test@example.com"},
+                {
+                    "type": "credential_fill",
+                    "selector": "#password",
+                    "credential": "site_password",
+                    "mode": "create_or_reuse",
+                    "account": "test@example.com",
+                },
+                {
+                    "type": "credential_fill",
+                    "selector": "#confirm-password",
+                    "credential": "site_password",
+                    "mode": "create_or_reuse",
+                    "account": "test@example.com",
+                },
+            ]
+
+            started = self.run_cli(
+                "handoff-start",
+                "--profile-dir", str(profile),
+                "--browser-channel", "chromium",
+                "--url", f"{self.base_url}/form.html",
+                "--credential-root", str(credential_root),
+                "--handoff-root", str(handoff_root),
+                "--handoff-id", handoff_id,
+                "--replay-actions-json", json.dumps(replay),
+            )
+            self.assertEqual(json.loads(started.stdout)["state"], "STARTING")
+
+            ready = self.wait_for_state(handoff_root, handoff_id, "READY_FOR_HUMAN")
+            credential_evidence = [x for x in ready["replay_evidence"] if x["type"] == "credential_fill"]
+            self.assertEqual(len(credential_evidence), 2)
+            self.assertTrue(all(x["readback"] == {"credential": "site_password", "verified": True} for x in credential_evidence))
+
+            files = list(credential_root.glob("*.json"))
+            self.assertEqual(len(files), 1)
+            password = json.loads(files[0].read_text())["password"]
+            self.assertNotIn(password, started.stdout)
+            self.assertNotIn(password, json.dumps(ready))
+
+            self.run_cli(
+                "handoff-finish",
+                "--handoff-root", str(handoff_root),
+                "--handoff-id", handoff_id,
+            )
+            self.wait_for_state(handoff_root, handoff_id, "FINISHED")
+
 
 if __name__ == "__main__":
     unittest.main()
