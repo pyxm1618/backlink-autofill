@@ -53,20 +53,26 @@ class TabIsolationAndResumeTests(unittest.TestCase):
         cls.cdp_port = _find_free_port()
         cls.user_data_dir = tempfile.mkdtemp(prefix="backlink-tab-profile-")
 
-        candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
-            shutil.which("google-chrome"),
-            shutil.which("chromium"),
-            shutil.which("chromium-browser"),
-        ]
-        chrome_binary = next((c for c in candidates if c and Path(c).is_file()), None)
-        if not chrome_binary:
+        chrome_binary = None
+        try:
             from playwright.sync_api import sync_playwright
             pw = sync_playwright().start()
             chrome_binary = pw.chromium.executable_path
             pw.stop()
+        except Exception:
+            pass
 
+        if not chrome_binary or not Path(chrome_binary).is_file():
+            candidates = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
+                shutil.which("google-chrome"),
+                shutil.which("chromium"),
+                shutil.which("chromium-browser"),
+            ]
+            chrome_binary = next((c for c in candidates if c and Path(c).is_file()), None)
+
+        cls.chrome_log = tempfile.NamedTemporaryFile(mode="w+", prefix="cdp-tab-chrome-log-", delete=False)
         cls.chrome_process = subprocess.Popen(
             [
                 chrome_binary,
@@ -75,14 +81,19 @@ class TabIsolationAndResumeTests(unittest.TestCase):
                 f"--user-data-dir={cls.user_data_dir}",
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
                 "about:blank",
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=cls.chrome_log,
+            stderr=subprocess.STDOUT,
         )
 
         deadline = time.time() + 15
         while time.time() < deadline:
+            if cls.chrome_process.poll() is not None:
+                break
             try:
                 with urlopen(f"http://127.0.0.1:{cls.cdp_port}/json/version", timeout=0.5) as resp:
                     if json.load(resp).get("Browser"):
@@ -91,7 +102,14 @@ class TabIsolationAndResumeTests(unittest.TestCase):
                 time.sleep(0.2)
         else:
             cls.chrome_process.terminate()
-            raise RuntimeError(f"CDP browser did not become available on port {cls.cdp_port}")
+            cls.chrome_log.seek(0)
+            log_output = cls.chrome_log.read()
+            raise RuntimeError(f"CDP browser did not become available on port {cls.cdp_port}. Log:\n{log_output}")
+
+        if cls.chrome_process.poll() is not None:
+            cls.chrome_log.seek(0)
+            log_output = cls.chrome_log.read()
+            raise RuntimeError(f"CDP browser exited early with code {cls.chrome_process.returncode}. Log:\n{log_output}")
 
         cls.cdp_url = f"http://127.0.0.1:{cls.cdp_port}"
 
@@ -100,6 +118,8 @@ class TabIsolationAndResumeTests(unittest.TestCase):
         if cls.chrome_process.poll() is None:
             cls.chrome_process.terminate()
             cls.chrome_process.wait(timeout=5)
+        cls.chrome_log.close()
+        Path(cls.chrome_log.name).unlink(missing_ok=True)
         shutil.rmtree(cls.user_data_dir, ignore_errors=True)
         cls.server.shutdown()
         cls.server.server_close()
