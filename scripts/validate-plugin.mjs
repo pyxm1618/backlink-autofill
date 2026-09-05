@@ -75,6 +75,13 @@ assert(skill.includes('Do not call or require a separate LLM API'), 'no-separate
 assert(readme.includes('One shared submitter profile'), 'README must document one shared submitter profile')
 assert(readme.includes('projects/<project-id>/'), 'README must document per-project private directories')
 assert(readme.includes('must never borrow assets from a sibling project'), 'README must document cross-project asset prohibition')
+assert(readme.includes('外链总表') && readme.includes('项目外链管理'), 'README must document the two-tab shared Sheet control plane')
+assert(readme.includes('Final submit may be automatic'), 'README must document automatic final submit')
+assert(readme.includes('Headless is the default'), 'README must document headless default')
+assert(!readme.includes('Never click the final Submit'), 'README contains obsolete manual-final-submit rule')
+assert(!readme.includes('preferably the Codex Chrome extension'), 'README contains obsolete Chrome-extension execution guidance')
+assert(readme.includes('python3 -m pip install -r plugins/backlink-autofill/scripts/requirements.txt'), 'README must document Playwright dependency installation')
+assert(readme.includes('scripts/configure-control-plane.py'), 'README must document shared control-plane configuration')
 
 assert(registry.projects.length >= 1, 'project registry is empty')
 assert(registry.projects.some((p) => p.id === 'quick-iching'), 'Quick I Ching missing from registry')
