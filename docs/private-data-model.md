@@ -144,6 +144,18 @@ Rules:
 - `credentials/` is the only intentional password persistence surface;
 - CAPTCHA/2FA/security-challenge solutions are never persisted.
 
+## Gmail and Email OTP handling
+
+Email-based verification codes (EMAIL_OTP) follow a strict zero-persistence policy:
+
+1. **No Gmail credentials or tokens stored**: Backlink Autofill never stores Gmail passwords, OAuth tokens, or refresh tokens in the local data model.
+2. **Delegated host capabilities**: Mail retrieval is handled entirely by the surrounding AI host environment:
+   - In **Codex**, via the authorized Gmail connected app / tools;
+   - In **Google Antigravity**, via the authorized Gmail MCP (`gmail_search`, `gmail_get_message`).
+3. **Shared Core Resolver**: Both host environments share the universal `email_otp_resolver.py` engine for platform scoring, narrow time-window matching, and IdP protection (Google/GitHub/payment auth emails are strictly rejected).
+4. **Ephemeral memory-only OTP**: Once resolved, the OTP is passed exclusively through ephemeral memory via child process `stdin` to `browser_cli.py resolve-email-otp`.
+5. **Strict persistence prohibition**: OTP values must **never** be saved to Google Sheets, checkpoints, `human_pending` records, recipes, logs, shell scripts, or command argv.
+
 ## Install/update invariant
 
 Given:
@@ -157,11 +169,11 @@ Given:
 ├── runtime/
 ├── recipes/
 └── projects/
-    ├── quick-iching/
-    └── project-b/
+    ├── <project-a>/
+    └── <project-b>/
 ```
 
-Plugin reinstall must preserve every private item above. Updating a Quick I Ching asset pack may change only `projects/quick-iching/` and must preserve the shared profile, control plane, credentials, browser/runtime/recipes, and sibling projects.
+Plugin reinstall must preserve every private item above. Updating a project's asset pack may change only `projects/<project-id>/` and must preserve the shared profile, control plane, credentials, browser/runtime/recipes, and sibling projects.
 
 ## Runtime resolution order
 

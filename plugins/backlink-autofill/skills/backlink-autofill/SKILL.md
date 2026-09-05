@@ -282,7 +282,7 @@ When the user completes the human step in the visible Chrome window and asks to 
 2. Locate the durable `human_pending` record under `~/.backlink-autofill/runtime/human-pending/<project_id>/<backlink_id>.json` and locate the original Tab by persisted `target_id`;
 3. Inspect current page state to confirm the human blocker has been resolved (e.g. verification code accepted, logged in, reached next form step);
 4. Resume execution from the checkpoint;
-5. Once a stable terminal status (`已提交`, `审核中`, `已上线`, `已排期`, `失败`, `不适用`) is verified and written to Sheet, call `human-pending-resolve` with `--project-id`, `--backlink-id`, and `--terminal-status` to cleanly resolve the pending record;
+5. Once a stable terminal status (`已提交`, `审核中`, `已上线`, `已排期`, `失败`, `不适用`) is verified and written to Sheet, call `human-pending-resolve` with `--project-id`, `--backlink-id`, and `--terminal-status` to cleanly resolve the pending record and trigger best-effort cleanup of the target tab. If tab closure encounters an issue (e.g. tab already closed or CDP disconnect), it MUST NOT revert or degrade the verified terminal business status;
 6. **Strict prohibition on `clear`**: Submission workflow MUST NEVER use `human-pending-clear` to restart tasks from scratch. `clear` is strictly an administrative command requiring `--admin-override`;
 7. **Conservative recovery rule**: if the original `target_id` cannot be found or the tab was closed:
    - CLI returns `TARGET_TAB_LOST`;
@@ -373,7 +373,7 @@ After a verified stable flow, save selectors/navigation/success indicators. Neve
 
 ### 14. Finish or continue
 
-Delete completed-row checkpoints once the row reaches a non-ambiguous terminal state. Keep checkpoint and durable `human_pending` record for `需人工`/ambiguous interrupted work.
+Delete completed-row checkpoints once the row reaches a non-ambiguous terminal state. Terminal task tabs are automatically closed upon completion and Sheet read-back; only genuine `HUMAN_PENDING` tasks retain their tabs in the persistent browser. Keep checkpoint and durable `human_pending` record for `需人工`/ambiguous interrupted work.
 
 Continue processing rows until the batch is exhausted or the invocation limit is reached. Single-task human blockers (`需人工`) must never terminate the batch; record them and immediately proceed to subsequent rows.
 

@@ -15,11 +15,28 @@ explicit project
 → continue
 ```
 
-**Headless is the default.** Website automation uses the plugin's Playwright runtime with one dedicated persistent browser profile under `~/.backlink-autofill/browser-profile/`.
+**Headless is the default.** Automation runs via a persistent Chrome CDP session (`http://127.0.0.1:9222`, or `BACKLINK_BROWSER_CDP_URL`) reusing a single persistent browser context, avoiding per-task browser spawning:
+- **Terminal task tab cleanup**: When an ordinary task reaches a terminal state (`已提交`, `审核中`, `已排期`, `已上线`, `失败`, `不适用`) and confirms Sheet exact-row read-back, its browser tab is automatically closed;
+- **Non-blocking HUMAN_PENDING**: If a genuine blocker (CAPTCHA, 2FA, SMS, phone, payment) or unresolvable verification occurs, the task enters `需人工` and preserves its tab in the persistent Chrome window. **The batch does NOT stop**—subsequent tasks continue execution immediately;
+- **Best-effort pending cleanup**: When a pending task is resumed and reaches a terminal state, the system attempts an external CDP close on that tab. Cleanup errors do not pollute or revert the confirmed terminal state.
 
-**Final submit may be automatic.** The agent does not stop merely because a button says Submit, Publish, Launch, Post, Create Listing, or Send for Review. Genuine human-only blockers remain CAPTCHA/Cloudflare, 2FA/passkey/SMS verification, payment, unusual authorization, missing factual information, or a primary/existing account credential that the backlink credential store does not own.
+**Final submit may be automatic.** The agent does not stop merely because a button says Submit, Publish, Launch, Post, Create Listing, or Send for Review. Genuine human-only blockers remain CAPTCHA/Cloudflare, 2FA/passkey/SMS verification, payment, unusual authorization, missing factual information, or an unauthenticated state that local site credentials cannot resolve.
 
-Google Sheets is not manipulated through the browser. The Codex plugin binds the official Google Drive/Sheets capability for structured queue reads and writes.
+**Existing Account ≠ Existing Submission & Preflight Gate.** Stored site credentials justify attempting login, not proof of platform account existence. Once authenticated, the agent strictly runs **Existing Submission Preflight** (`detect_existing_project_submission`) on the listings/dashboard view:
+- `FOUND`: The project already exists—Final Submit is strictly forbidden;
+- `UNKNOWN`: Status is ambiguous—halts safely to `需人工` without duplicate submission;
+- `NOT_FOUND`: Only then proceeds with submission.
+
+**Host-agnostic EMAIL_OTP & Ephemeral Stdin.** For email verification codes, the system automatically checks host mail capabilities:
+- In **Codex**, via the authorized Gmail connected app;
+- In **Google Antigravity**, via the authorized Gmail MCP (`gmail_search`, `gmail_get_message`);
+- Both share the universal Core Resolver (`email_otp_resolver.py`) with strict platform matching and IdP protection (Google/GitHub/payment auth emails rejected);
+- The OTP is passed via **ephemeral child process `stdin`** into CLI memory—it **never** touches argv, Google Sheets, checkpoints, pending records, recipes, or logs.
+
+**Evidence Contract & ProductionSheetGate.** Google Sheets is not manipulated through the browser. Structured reads and writes go through the official Google Drive/Sheets capability, guarded by `ProductionSheetGate`:
+- `实测链接属性` strictly requires live DOM inspection of target `<a>` tag `rel` attribute;
+- `结果链接` strictly requires positive verification of unauthenticated public accessibility;
+- Every Sheet write must be verified by an immediate **exact-row read-back**.
 
 ## Shared Google Sheets control plane
 
@@ -120,7 +137,7 @@ This means a routine free directory that asks the agent to create Password + Con
 ├── runtime/
 ├── recipes/
 └── projects/
-    ├── quick-iching/
+    ├── <project-a>/
     │   ├── assets.json
     │   ├── assets/
     │   └── source/
@@ -171,18 +188,18 @@ Normal invocation:
 
 ```text
 $backlink-autofill
-当前项目：Quick I Ching。
+当前项目：<项目名称或项目ID>。
 ```
 
 Optional smaller batch:
 
 ```text
 $backlink-autofill
-当前项目：Quick I Ching。
+当前项目：<项目名称或项目ID>。
 这次先处理 5 条。
 ```
 
-The agent reads `项目外链管理`, selects only the current project's eligible rows, and processes them in Sheet order. Ordinary successful rows run without opening a visible browser or asking for per-row confirmation.
+The agent reads `项目外链管理`, selects only the current project's eligible rows, and processes them in Sheet order. Ordinary successful rows run without opening a visible browser or asking for per-row confirmation. Upon reaching a terminal status and writing back to Sheet with exact-row confirmation, the corresponding task tab is automatically closed to keep browser resources bounded.
 
 For a new backlink-platform account, the action plan may include:
 
@@ -192,9 +209,13 @@ credential = site_password
 mode = create_or_reuse
 ```
 
-For an existing login, it may use `existing_only` only when this system already has a credential for the current domain/account. Otherwise it pauses for the human rather than guessing.
+For an existing login, it may use `existing_only` only when this system already has a credential for the current domain/account. Stored credentials justify attempting login, not proof that the account exists. If explicit account not found is returned, it safely falls back to signup.
 
-If a real human-only blocker occurs (e.g. Email verification code, CAPTCHA, 2FA), the current row becomes `需人工`, its browser tab is preserved in the persistent Chrome window, and a durable `human_pending` record is stored. The batch does NOT pause—subsequent tasks continue execution immediately. The user can complete the human step anytime and instruct the agent to resume from the preserved tab and checkpoint without repeating registration or final submit.
+Before any irreversible Final Submit, the agent performs **Existing Submission Preflight** against the authenticated listings/dashboard. If the project already exists (`FOUND`), Final Submit is strictly blocked; if ambiguous (`UNKNOWN`), it halts to `需人工`.
+
+If an email verification code is required, the agent first attempts automated, host-agnostic EMAIL_OTP resolution using the host's mail capability (Codex Gmail connected app or Antigravity Gmail MCP) via the shared Core Resolver and ephemeral stdin injection. If automated mail retrieval is unavailable or an unresolvable blocker occurs (e.g. CAPTCHA, 2FA, SMS), the current row becomes `需人工`, its browser tab is preserved in the persistent Chrome window, and a durable `human_pending` record is stored. The batch does NOT pause—subsequent tasks continue execution immediately.
+
+When human-pending tasks are completed and resumed, reaching a confirmed terminal state triggers best-effort cleanup of the preserved tab without affecting the recorded status.
 
 ## Evidence and truthfulness
 
