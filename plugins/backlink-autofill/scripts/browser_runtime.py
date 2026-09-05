@@ -15,9 +15,11 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import BrowserContext, Locator, Page, Playwright, sync_playwright
 
+from credential_store import CredentialStoreError, get_site_password
+
 MAX_BODY_EXCERPT = 4000
 MAX_ACTIONS = 100
-_ALLOWED_ACTIONS = {"fill", "select", "check", "upload", "click", "submit"}
+_ALLOWED_ACTIONS = {"fill", "credential_fill", "select", "check", "upload", "click", "submit"}
 _SENSITIVE_FIELD_TERMS = (
     "password",
     "passwd",
@@ -287,6 +289,7 @@ class BrowserRuntime:
         browser_channel: str = "chrome",
         headless: bool = True,
         allowed_upload_root: Path | None = None,
+        credential_root: Path | None = None,
         timeout_ms: int = 30_000,
     ):
         self.profile_dir = Path(profile_dir).expanduser().resolve()
@@ -295,6 +298,7 @@ class BrowserRuntime:
         self.allowed_upload_root = (
             Path(allowed_upload_root).expanduser().resolve() if allowed_upload_root is not None else None
         )
+        self.credential_root = Path(credential_root).expanduser().resolve() if credential_root is not None else None
         self.timeout_ms = timeout_ms
         self._playwright: Playwright | None = None
         self._context: BrowserContext | None = None
@@ -375,12 +379,24 @@ class BrowserRuntime:
             if _is_sensitive_field(locator):
                 raise BrowserRuntimeError(
                     "SENSITIVE_FIELD",
-                    "Password, passcode, secret, token, or API-key fields require human/browser credential handling",
+                    "Sensitive fields require credential_fill or human/browser credential handling",
                 )
         except BrowserRuntimeError:
             raise
         except Exception as exc:
             raise BrowserRuntimeError("FIELD_INSPECTION_FAILED", "Could not inspect target field safely") from exc
+
+    def _verify_sensitive_password_target(self, locator: Locator) -> None:
+        try:
+            if not _is_sensitive_field(locator):
+                raise BrowserRuntimeError(
+                    "CREDENTIAL_TARGET_NOT_SENSITIVE",
+                    "credential_fill may only target a password/sensitive field",
+                )
+        except BrowserRuntimeError:
+            raise
+        except Exception as exc:
+            raise BrowserRuntimeError("FIELD_INSPECTION_FAILED", "Could not inspect credential target safely") from exc
 
     def _resolve_upload(self, raw_path: Any) -> Path:
         if self.allowed_upload_root is None:
@@ -397,6 +413,28 @@ class BrowserRuntime:
         if not path.is_file():
             raise BrowserRuntimeError("UPLOAD_NOT_FOUND", "Upload file does not exist")
         return path
+
+    def _site_password_for_action(self, action: dict[str, Any]) -> str:
+        if self.credential_root is None:
+            raise BrowserRuntimeError("CREDENTIAL_ROOT_REQUIRED", "credential_fill requires a local credential root")
+        if action.get("credential") != "site_password":
+            raise BrowserRuntimeError("INVALID_CREDENTIAL_KIND", "credential_fill supports only site_password")
+        mode = action.get("mode") or "existing_only"
+        account = action.get("account")
+        assert self.page is not None
+        parsed = urlparse(self.page.url)
+        domain = parsed.hostname
+        if not domain:
+            raise BrowserRuntimeError("INVALID_CREDENTIAL_DOMAIN", "could not resolve current page domain")
+        try:
+            return get_site_password(
+                self.credential_root,
+                domain,
+                account=account,
+                mode=mode,
+            )
+        except CredentialStoreError as exc:
+            raise BrowserRuntimeError(exc.code, exc.message) from exc
 
     def execute(self, url: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(actions, list):
@@ -435,6 +473,14 @@ class BrowserRuntime:
                     readback = locator.input_value()
                     if readback != value:
                         raise BrowserRuntimeError("READBACK_MISMATCH", f"Fill read-back mismatch at action {index}")
+
+                elif action_type == "credential_fill":
+                    self._verify_sensitive_password_target(locator)
+                    password = self._site_password_for_action(action)
+                    locator.fill(password)
+                    if locator.input_value() != password:
+                        raise BrowserRuntimeError("READBACK_MISMATCH", f"Credential fill read-back mismatch at action {index}")
+                    readback = {"credential": "site_password", "verified": True}
 
                 elif action_type == "select":
                     value = action.get("value")
