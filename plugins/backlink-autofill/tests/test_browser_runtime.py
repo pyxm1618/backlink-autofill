@@ -67,6 +67,19 @@ class BrowserRuntimeTests(unittest.TestCase):
             self.assertNotIn("value", by_selector["#password"])
             self.assertLessEqual(len(result["page"]["body_excerpt"]), 4000)
 
+    def test_passive_recaptcha_disclosure_does_not_trigger_human_handoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "profile"
+            proc = self.run_cli(
+                "inspect",
+                "--profile-dir", str(profile),
+                "--browser-channel", "chromium",
+                "--url", f"{self.base_url}/benign-recaptcha.html",
+            )
+            result = json.loads(proc.stdout)
+            self.assertEqual(result["ok"], True)
+            self.assertIsNone(result["page"]["human_blocker"])
+
     def test_execute_fills_uploads_submits_and_persists_session_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
