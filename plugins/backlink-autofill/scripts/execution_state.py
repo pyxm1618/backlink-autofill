@@ -14,6 +14,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -219,3 +220,76 @@ def load_recipe(root: Path, domain: str) -> dict[str, Any] | None:
     if canonical_domain(payload.get("domain", "")) != expected:
         raise ValueError("recipe domain does not match requested domain")
     return payload
+
+
+def _human_pending_path(runtime_root: Path, project_id: str, backlink_id: str) -> Path:
+    project_id = _validate_project_id(project_id)
+    safe_backlink_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(backlink_id).strip())
+    if not safe_backlink_id:
+        raise ValueError("backlink_id must be a non-empty string")
+    return Path(runtime_root) / "human-pending" / project_id / f"{safe_backlink_id}.json"
+
+
+def save_human_pending(
+    runtime_root: Path,
+    project_id: str,
+    backlink_id: str,
+    domain: str,
+    blocker_type: str,
+    current_url: str,
+    target_id: str | None = None,
+    checkpoint_ref: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    project_id = _validate_project_id(project_id)
+    payload = {
+        "schema_version": 1,
+        "project_id": project_id,
+        "backlink_id": str(backlink_id).strip(),
+        "domain": canonical_domain(domain),
+        "blocker_type": str(blocker_type).strip(),
+        "current_url": str(current_url).strip(),
+        "target_id": str(target_id).strip() if target_id else None,
+        "checkpoint_ref": str(checkpoint_ref).strip() if checkpoint_ref else None,
+        "status": "NEEDS_HUMAN",
+        "created_at": time.time(),
+        "extra": extra or {},
+    }
+    _assert_no_sensitive_data(payload)
+    path = _human_pending_path(runtime_root, project_id, backlink_id)
+    return _atomic_write_json(path, payload)
+
+
+def load_human_pending(runtime_root: Path, project_id: str, backlink_id: str) -> dict[str, Any] | None:
+    path = _human_pending_path(runtime_root, project_id, backlink_id)
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    _assert_no_sensitive_data(payload)
+    return payload
+
+
+def find_human_pending(runtime_root: Path, project_id: str, backlink_id: str) -> dict[str, Any] | None:
+    return load_human_pending(runtime_root, project_id, backlink_id)
+
+
+def list_human_pending(runtime_root: Path, project_id: str | None = None) -> list[dict[str, Any]]:
+    pending_dir = Path(runtime_root) / "human-pending"
+    if not pending_dir.exists():
+        return []
+    results = []
+    project_dirs = [pending_dir / project_id] if project_id else list(pending_dir.iterdir())
+    for pdir in project_dirs:
+        if pdir.is_dir():
+            for item in pdir.glob("*.json"):
+                try:
+                    payload = json.loads(item.read_text(encoding="utf-8"))
+                    results.append(payload)
+                except Exception:
+                    pass
+    return sorted(results, key=lambda x: x.get("created_at") or 0)
+
+
+def clear_human_pending(runtime_root: Path, project_id: str, backlink_id: str) -> None:
+    path = _human_pending_path(runtime_root, project_id, backlink_id)
+    path.unlink(missing_ok=True)

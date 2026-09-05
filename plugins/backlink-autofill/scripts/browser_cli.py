@@ -11,6 +11,7 @@ from pathlib import Path
 try:
     from browser_handoff import HandoffError, handoff_status, request_handoff_finish, start_handoff
     from browser_runtime import BrowserRuntime, BrowserRuntimeError
+    from execution_state import clear_human_pending, list_human_pending
 except ModuleNotFoundError as exc:
     print(
         json.dumps(
@@ -31,6 +32,11 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--browser-channel", default="chrome")
     parser.add_argument("--url", required=True)
     parser.add_argument("--headed", action="store_true", help="show the browser window; headless is default")
+    parser.add_argument("--cdp-url", help="CDP endpoint URL (e.g. http://127.0.0.1:9222)")
+    parser.add_argument("--allow-local-fallback", action="store_true", help="allow fallback to local Chromium in CI/test")
+    parser.add_argument("--keep-on-human-blocker", action="store_true", help="keep tab open on human blocker")
+    parser.add_argument("--target-id", help="CDP target ID to attach/resume")
+    parser.add_argument("--target-domain", help="Allowed target domain for credential fill")
 
 
 def _add_handoff_identity(parser: argparse.ArgumentParser) -> None:
@@ -66,6 +72,15 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_finish_parser = subparsers.add_parser("handoff-finish")
     _add_handoff_identity(handoff_finish_parser)
 
+    pending_list_parser = subparsers.add_parser("human-pending-list")
+    pending_list_parser.add_argument("--runtime-root", required=True)
+    pending_list_parser.add_argument("--project-id")
+
+    pending_clear_parser = subparsers.add_parser("human-pending-clear")
+    pending_clear_parser.add_argument("--runtime-root", required=True)
+    pending_clear_parser.add_argument("--project-id", required=True)
+    pending_clear_parser.add_argument("--backlink-id", required=True)
+
     return parser
 
 
@@ -96,6 +111,11 @@ def main() -> int:
                 Path(args.profile_dir),
                 browser_channel=args.browser_channel,
                 headless=not args.headed,
+                cdp_url=args.cdp_url,
+                allow_local_fallback=args.allow_local_fallback,
+                keep_on_human_blocker=args.keep_on_human_blocker,
+                resume_target_id=args.target_id,
+                target_domain=args.target_domain,
             ) as runtime:
                 result = runtime.inspect(args.url)
 
@@ -111,8 +131,21 @@ def main() -> int:
                 headless=not args.headed,
                 allowed_upload_root=Path(args.allowed_upload_root) if args.allowed_upload_root else None,
                 credential_root=Path(args.credential_root) if args.credential_root else None,
+                cdp_url=args.cdp_url,
+                allow_local_fallback=args.allow_local_fallback,
+                keep_on_human_blocker=args.keep_on_human_blocker,
+                resume_target_id=args.target_id,
+                target_domain=args.target_domain,
             ) as runtime:
                 result = runtime.execute(args.url, actions)
+
+        elif args.command == "human-pending-list":
+            items = list_human_pending(Path(args.runtime_root), project_id=args.project_id)
+            result = {"ok": True, "count": len(items), "items": items}
+
+        elif args.command == "human-pending-clear":
+            clear_human_pending(Path(args.runtime_root), project_id=args.project_id, backlink_id=args.backlink_id)
+            result = {"ok": True, "cleared": True, "project_id": args.project_id, "backlink_id": args.backlink_id}
 
         elif args.command == "handoff-start":
             replay = _parse_json_array(
