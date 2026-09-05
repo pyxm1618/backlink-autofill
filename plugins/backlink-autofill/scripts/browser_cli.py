@@ -11,7 +11,7 @@ from pathlib import Path
 try:
     from browser_handoff import HandoffError, handoff_status, request_handoff_finish, start_handoff
     from browser_runtime import BrowserRuntime, BrowserRuntimeError
-    from execution_state import clear_human_pending, list_human_pending
+    from execution_state import clear_human_pending, list_human_pending, resolve_human_pending
 except ModuleNotFoundError as exc:
     print(
         json.dumps(
@@ -74,12 +74,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     pending_list_parser = subparsers.add_parser("human-pending-list")
     pending_list_parser.add_argument("--runtime-root", required=True)
-    pending_list_parser.add_argument("--project-id")
+    pending_list_parser.add_argument("--project-id", required=True)
+
+    pending_resolve_parser = subparsers.add_parser("human-pending-resolve")
+    pending_resolve_parser.add_argument("--runtime-root", required=True)
+    pending_resolve_parser.add_argument("--project-id", required=True)
+    pending_resolve_parser.add_argument("--backlink-id", required=True)
+    pending_resolve_parser.add_argument("--terminal-status", required=True)
 
     pending_clear_parser = subparsers.add_parser("human-pending-clear")
     pending_clear_parser.add_argument("--runtime-root", required=True)
     pending_clear_parser.add_argument("--project-id", required=True)
     pending_clear_parser.add_argument("--backlink-id", required=True)
+    pending_clear_parser.add_argument("--admin-override", action="store_true", help="Explicit administrative confirmation")
 
     return parser
 
@@ -141,10 +148,36 @@ def main() -> int:
 
         elif args.command == "human-pending-list":
             items = list_human_pending(Path(args.runtime_root), project_id=args.project_id)
-            result = {"ok": True, "count": len(items), "items": items}
+            result = {"ok": True, "count": len(items), "project_id": args.project_id, "items": items}
+
+        elif args.command == "human-pending-resolve":
+            resolved = resolve_human_pending(
+                Path(args.runtime_root),
+                project_id=args.project_id,
+                backlink_id=args.backlink_id,
+                terminal_status=args.terminal_status,
+            )
+            result = {
+                "ok": True,
+                "resolved": resolved,
+                "project_id": args.project_id,
+                "backlink_id": args.backlink_id,
+                "terminal_status": args.terminal_status,
+            }
 
         elif args.command == "human-pending-clear":
-            clear_human_pending(Path(args.runtime_root), project_id=args.project_id, backlink_id=args.backlink_id)
+            if not args.admin_override:
+                return _emit_error(
+                    "ADMIN_OVERRIDE_REQUIRED",
+                    "human-pending-clear is an admin-only operation requiring --admin-override. "
+                    "Use human-pending-resolve after verifying stable terminal status."
+                )
+            clear_human_pending(
+                Path(args.runtime_root),
+                project_id=args.project_id,
+                backlink_id=args.backlink_id,
+                admin_override=True,
+            )
             result = {"ok": True, "cleared": True, "project_id": args.project_id, "backlink_id": args.backlink_id}
 
         elif args.command == "handoff-start":

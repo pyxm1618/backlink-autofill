@@ -134,6 +134,96 @@ class ExecutionStateTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), checkpoint)
             self.assertEqual(list(path.parent.glob("*.tmp")), [])
 
+    def test_human_pending_strict_project_isolation_and_no_overwrite(self):
+        """RED: 两个不同项目对同一域名平台同时存在 HUMAN_PENDING，互不覆盖且严格隔离"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # 项目 A (quick-iching) 遇阻
+            path_a = execution_state.save_human_pending(
+                runtime_root=root,
+                project_id="quick-iching",
+                backlink_id="foundrlist",
+                domain="foundrlist.com",
+                blocker_type="EMAIL_OTP",
+                current_url="https://foundrlist.com/register/verify",
+                target_id="target-quick-iching-1",
+            )
+            # 项目 B (project-b) 对同一域名也遇阻
+            path_b = execution_state.save_human_pending(
+                runtime_root=root,
+                project_id="project-b",
+                backlink_id="foundrlist",
+                domain="foundrlist.com",
+                blocker_type="CAPTCHA",
+                current_url="https://foundrlist.com/register/captcha",
+                target_id="target-project-b-2",
+            )
+
+            # 两个文件路径完全独立
+            self.assertNotEqual(str(path_a), str(path_b))
+            self.assertTrue(path_a.exists())
+            self.assertTrue(path_b.exists())
+
+            # 数据互不覆盖
+            item_a = execution_state.load_human_pending(root, project_id="quick-iching", backlink_id="foundrlist")
+            item_b = execution_state.load_human_pending(root, project_id="project-b", backlink_id="foundrlist")
+            self.assertEqual(item_a["target_id"], "target-quick-iching-1")
+            self.assertEqual(item_b["target_id"], "target-project-b-2")
+
+            # list 必须要求 project_id 上下文，缺省必须抛出 ValueError
+            with self.assertRaises(ValueError):
+                execution_state.list_human_pending(root, project_id=None)
+
+            list_a = execution_state.list_human_pending(root, project_id="quick-iching")
+            self.assertEqual(len(list_a), 1)
+            self.assertEqual(list_a[0]["target_id"], "target-quick-iching-1")
+
+            list_b = execution_state.list_human_pending(root, project_id="project-b")
+            self.assertEqual(len(list_b), 1)
+            self.assertEqual(list_b[0]["target_id"], "target-project-b-2")
+
+    def test_human_pending_resolve_and_clear_lifecycle(self):
+        """RED: 正常恢复生命周期使用 resolve_human_pending；clear 仅作为显式 admin override"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            execution_state.save_human_pending(
+                runtime_root=root,
+                project_id="quick-iching",
+                backlink_id="toollisted",
+                domain="toollisted.com",
+                blocker_type="EMAIL_OTP",
+                current_url="https://toollisted.com/verify",
+                target_id="target-toollisted-99",
+            )
+
+            # resolve 时若非稳定终态，拒绝 resolve
+            with self.assertRaises(ValueError):
+                execution_state.resolve_human_pending(
+                    root,
+                    project_id="quick-iching",
+                    backlink_id="toollisted",
+                    terminal_status="IN_PROGRESS",
+                )
+
+            # clear_human_pending 若未加 admin_override，拒绝删除
+            with self.assertRaises(PermissionError):
+                execution_state.clear_human_pending(
+                    root,
+                    project_id="quick-iching",
+                    backlink_id="toollisted",
+                    admin_override=False,
+                )
+
+            # 正常使用稳定终态 resolve
+            res = execution_state.resolve_human_pending(
+                root,
+                project_id="quick-iching",
+                backlink_id="toollisted",
+                terminal_status="已提交",
+            )
+            self.assertTrue(res)
+            self.assertIsNone(execution_state.load_human_pending(root, "quick-iching", "toollisted"))
+
 
 if __name__ == "__main__":
     unittest.main()

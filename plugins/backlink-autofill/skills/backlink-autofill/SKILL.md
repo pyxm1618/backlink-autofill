@@ -245,14 +245,17 @@ Never pause or abort the batch because one task requires human intervention. Mul
 When the user completes the human step in the visible Chrome window and asks to resume (e.g. "FoundrList verification done"):
 
 1. Attach to the persistent CDP Chrome session (`127.0.0.1:9222`);
-2. Locate the durable `human_pending` record and locate the original Tab by persisted `target_id`;
+2. Locate the durable `human_pending` record under `~/.backlink-autofill/runtime/human-pending/<project_id>/<backlink_id>.json` and locate the original Tab by persisted `target_id`;
 3. Inspect current page state to confirm the human blocker has been resolved (e.g. verification code accepted, logged in, reached next form step);
 4. Resume execution from the checkpoint;
-5. Once a stable terminal status (`已提交`, `审核中`, `已上线`, `失败`, `不适用`) is verified and written to Sheet, remove the `human_pending` record;
-6. **Conservative recovery rule**: if the original `target_id` cannot be found or the tab was closed:
+5. Once a stable terminal status (`已提交`, `审核中`, `已上线`, `已排期`, `失败`, `不适用`) is verified and written to Sheet, call `human-pending-resolve` with `--project-id`, `--backlink-id`, and `--terminal-status` to cleanly resolve the pending record;
+6. **Strict prohibition on `clear`**: Submission workflow MUST NEVER use `human-pending-clear` to restart tasks from scratch. `clear` is strictly an administrative command requiring `--admin-override`;
+7. **Conservative recovery rule**: if the original `target_id` cannot be found or the tab was closed:
+   - CLI returns `TARGET_TAB_LOST`;
    - **Never auto-re-register**;
    - **Never auto-re-submit**;
-   - Perform conservative read-back inspection; if safe continuation cannot be proven beyond doubt, retain `需人工`.
+   - **Do NOT delete the pending record**;
+   - Retain `需人工` status and inform the user.
 
 ### 10. Classify outcome from evidence
 

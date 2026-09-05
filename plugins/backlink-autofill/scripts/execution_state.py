@@ -273,23 +273,62 @@ def find_human_pending(runtime_root: Path, project_id: str, backlink_id: str) ->
     return load_human_pending(runtime_root, project_id, backlink_id)
 
 
-def list_human_pending(runtime_root: Path, project_id: str | None = None) -> list[dict[str, Any]]:
-    pending_dir = Path(runtime_root) / "human-pending"
-    if not pending_dir.exists():
+TERMINAL_STATUSES = {
+    "已提交",
+    "审核中",
+    "已上线",
+    "已排期",
+    "失败",
+    "不适用",
+}
+
+
+def list_human_pending(runtime_root: Path, project_id: str) -> list[dict[str, Any]]:
+    if not project_id or not isinstance(project_id, str) or not project_id.strip():
+        raise ValueError("project_id must be a non-empty string for listing human pending items")
+    project_id = _validate_project_id(project_id)
+    pdir = Path(runtime_root) / "human-pending" / project_id
+    if not pdir.exists() or not pdir.is_dir():
         return []
     results = []
-    project_dirs = [pending_dir / project_id] if project_id else list(pending_dir.iterdir())
-    for pdir in project_dirs:
-        if pdir.is_dir():
-            for item in pdir.glob("*.json"):
-                try:
-                    payload = json.loads(item.read_text(encoding="utf-8"))
-                    results.append(payload)
-                except Exception:
-                    pass
+    for item in pdir.glob("*.json"):
+        try:
+            payload = json.loads(item.read_text(encoding="utf-8"))
+            results.append(payload)
+        except Exception:
+            pass
     return sorted(results, key=lambda x: x.get("created_at") or 0)
 
 
-def clear_human_pending(runtime_root: Path, project_id: str, backlink_id: str) -> None:
+def resolve_human_pending(
+    runtime_root: Path,
+    project_id: str,
+    backlink_id: str,
+    terminal_status: str,
+) -> bool:
+    project_id = _validate_project_id(project_id)
+    if terminal_status not in TERMINAL_STATUSES:
+        raise ValueError(
+            f"Cannot resolve human pending task with non-terminal status {terminal_status!r}. "
+            f"Must be one of {sorted(TERMINAL_STATUSES)}"
+        )
+    path = _human_pending_path(runtime_root, project_id, backlink_id)
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+
+def clear_human_pending(
+    runtime_root: Path,
+    project_id: str,
+    backlink_id: str,
+    admin_override: bool = False,
+) -> None:
+    if not admin_override:
+        raise PermissionError(
+            "clear_human_pending is an administrative operation that requires explicit admin_override=True. "
+            "Normal workflow must use resolve_human_pending after reaching a terminal status."
+        )
     path = _human_pending_path(runtime_root, project_id, backlink_id)
     path.unlink(missing_ok=True)

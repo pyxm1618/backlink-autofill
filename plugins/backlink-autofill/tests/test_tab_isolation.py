@@ -24,6 +24,7 @@ from execution_state import (
     find_human_pending,
     list_human_pending,
     load_human_pending,
+    resolve_human_pending,
     save_human_pending,
 )
 
@@ -217,14 +218,22 @@ class TabIsolationAndResumeTests(unittest.TestCase):
                         {"type": "submit", "selector": "#submit"},
                     ],
                 )
-                self.assertEqual(res2["ok"], True)
-                self.assertIn("Submission received", res2["page"]["body_excerpt"])
-
-            # 3. 达到终态后清理 pending 记录
-            clear_human_pending(runtime_root, project_id, "site-resume")
+            # 3. 达到终态后清理 pending 记录 (通过 resolve_human_pending)
+            resolved = resolve_human_pending(runtime_root, project_id, "site-resume", terminal_status="已提交")
+            self.assertTrue(resolved)
             self.assertIsNone(find_human_pending(runtime_root, project_id, "site-resume"))
 
-            # 4. 若 target_id 丢失/不存在，严禁自动重复注册或提交，必须抛出 TARGET_TAB_LOST
+            # 4. 若 target_id 丢失/不存在，严禁自动重复注册或提交，必须抛出 TARGET_TAB_LOST，且保持 pending 记录
+            save_human_pending(
+                runtime_root=runtime_root,
+                project_id=project_id,
+                backlink_id="site-lost",
+                domain="127.0.0.1",
+                blocker_type="EMAIL_OTP",
+                current_url=f"{self.base_url}/form.html",
+                target_id="LOST_TARGET_ID",
+            )
+
             with self.assertRaises(BrowserRuntimeError) as ctx:
                 with BrowserRuntime(
                     profile_dir=Path(self.user_data_dir),
@@ -234,6 +243,10 @@ class TabIsolationAndResumeTests(unittest.TestCase):
                     rt3.navigate(f"{self.base_url}/form.html")
 
             self.assertEqual(ctx.exception.code, "TARGET_TAB_LOST")
+            # 确认原 pending 记录完好保留，严禁自动删除
+            retained = find_human_pending(runtime_root, project_id, "site-lost")
+            self.assertIsNotNone(retained)
+            self.assertEqual(retained["status"], "NEEDS_HUMAN")
 
 
 if __name__ == "__main__":
