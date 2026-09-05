@@ -1,306 +1,305 @@
 # Backlink Submission Agent v2 — Design
 
 Date: 2026-09-05
-Status: approved in chat with execution-scope revision; ready for implementation planning after user review
+Status: approved for implementation planning
 
 ## Goal
 
-Turn the current single-target autofill workflow into a project-isolated backlink submission agent that:
+Evolve the current single-target autofill workflow into a project-isolated submission agent that starts from the existing project execution table, processes up to 100 pending targets per invocation, runs ordinary work headlessly, opens a visible browser only when human intervention is required, and writes verified execution state back to the project table.
 
-- starts from an already-existing selected project's task spreadsheet;
-- submits eligible pending targets automatically;
-- runs normal work headlessly;
-- opens a visible browser only when human intervention is required;
-- writes execution state back to the project sheet;
-- writes only actually observed platform facts back to the master backlink sheet;
-- reuses one shared submitter profile and strictly isolated per-project assets;
-- keeps discovery analysis minimal and uses real submission as the main source of truth.
+## Scope for the first implementation
 
-## Scope boundary for this implementation
+This implementation begins at **reading the existing project execution table**.
 
-This v2 implementation starts at **reading an existing project backlink-management spreadsheet**.
+In scope:
 
-In scope now:
-
-1. read the selected project's existing spreadsheet;
-2. select pending rows;
-3. execute submissions;
-4. update project execution status;
-5. propagate newly observed platform facts to the master sheet;
-6. handle headless execution, human takeover, and recipe reuse.
+1. resolve the explicitly selected project;
+2. read the existing Google Sheet execution queue through the Google Drive/Sheets connector;
+3. filter rows to the selected project only;
+4. select up to 100 pending rows per invocation;
+5. execute backlink submissions in a persistent local browser profile, headless by default;
+6. automatically complete the final submission when the flow is ordinary and no human-only condition is present;
+7. checkpoint and open a visible browser when human intervention is required;
+8. write the verified execution outcome back to the existing project execution row;
+9. reuse the shared submitter profile and only the selected project's private assets;
+10. cache reusable domain recipes after verified successful runs.
 
 Explicitly out of scope for this implementation:
 
-- discovering new backlink opportunities;
-- creating/populating a project spreadsheet from the master sheet;
-- changing the discovery skill's write path;
-- redesigning the discovery skill beyond documenting the desired minimal-analysis model.
+- backlink discovery;
+- changing the discovery skill;
+- creating or populating project rows from discovery results;
+- redesigning the master backlink database;
+- synchronizing newly observed platform facts into the current master/channel table.
 
-Those discovery/write-side changes are a separate follow-up task.
+Master-fact synchronization is deliberately deferred because the current master/channel table contains legacy researched values such as authority, DoFollow and free-status claims that are not guaranteed to be execution-verified. The master schema and discovery write path will be redesigned together in a separate task so verified observations cannot be mixed with old assumptions.
 
-## Core principles
+## Current Google Sheet compatibility contract
 
-1. **Discovery is minimal.** Discovery should find, normalize and deduplicate candidate backlink opportunities, reject only obvious junk/dead/malicious entries, and write them to the master sheet. It should not spend time pre-researching DR/DA, Semrush metrics, Follow/Nofollow, login method, price, AI-only status, approval time, etc.
-2. **Unknown stays blank.** Platform facts are written only when directly observed during execution or later verification. Do not guess.
-3. **Submit instead of over-screening.** Submission is the primary validation mechanism. If a target proves incompatible during execution, record the reason and move on.
-4. **Project isolation is strict.** The agent reads one selected project's task sheet and one selected project's private asset directory. It never borrows state or assets from sibling projects.
-5. **Shared identity, isolated project data.** `~/.backlink-autofill/submitter-profile.json` is shared across projects; project data/assets remain under `~/.backlink-autofill/projects/<project-id>/`.
-6. **Autonomous by default.** Normal submissions may complete automatically, including the final submission action, when no human-only condition is present.
-7. **Human only on exception.** CAPTCHA, 2FA, passkey, phone verification, manual payment/terms decisions, missing facts, or similar conditions move the task to `NEEDS_HUMAN` and open a visible browser.
-8. **Evidence before status.** `SUBMITTED` or `LIVE` may only be written after browser evidence confirms the corresponding state.
-9. **Run-based, not time-based.** The agent processes a bounded batch when invoked. v2 has no scheduler, cron, daily quota, or calendar-based task system.
+The current live execution source is the Google Spreadsheet titled:
 
-## Google Sheets topology
+`外链管理总控表`
 
-Use two logical layers and keep project execution physically isolated by default:
+Current execution tab:
 
-1. **One global master backlink spreadsheet** — platform/opportunity fact base shared across projects.
-2. **One independent project backlink-management spreadsheet per project** — execution queue and history for that project only.
+`多项目外链进度与排期表`
 
-Do not place every project's execution queue in one shared spreadsheet by default. The selected project's agent should normally need only its own project spreadsheet plus controlled write access to the global master for newly observed platform facts.
+The tab currently contains multiple projects in one table. Project isolation in this phase is therefore logical rather than physical: the agent must filter by the exact `项目名称` value for the explicitly selected project and must never mutate another project's row.
 
-The two layers join through `backlink_id`.
+Current columns A:L are:
 
-## Data model
+1. `项目名称`
+2. `外链平台`
+3. `当前状态`
+4. `提交日期`
+5. `预计上线 / 计划 Launch 日期`
+6. `履约/要求配合状态`
+7. `实际落地链接 (Live URL)`
+8. `实际是否 DoFollow`
+9. `Google 收录`
+10. `被推广目标页 (Target URL)`
+11. `锚文本 / 关键词`
+12. `账号 / 备注`
 
-### 1. Master backlink sheet
+The first implementation must not require this table to be migrated before use.
 
-Purpose: global platform/opportunity fact base shared across projects.
+The current workbook has no Quick I Ching rows yet. Therefore code/CI tests use fixtures modeled on the live schema, and real Quick I Ching queue E2E begins only after the discovery/write-side workflow has produced at least one Quick I Ching row.
 
-The discovery skill writes the minimal initial row. The submission agent enriches only fields it actually observes.
+## Queue selection
 
-Required columns:
+The Google Sheet must be accessed through the structured Google Drive/Sheets connector, not by browser-clicking spreadsheet cells.
 
-- `backlink_id` — stable unique ID
-- `domain`
-- `submit_url`
-- `source`
-- `discovered_at`
-- `basic_status` — `ACTIVE`, `REJECTED`, `DEAD`
-- `basic_reject_reason` — only for obvious junk/dead/malicious/redundant candidates
+Selection rules:
 
-Observed fact columns, blank until verified:
+1. explicit project selection remains mandatory;
+2. search/read only the execution tab;
+3. filter to rows whose `项目名称` exactly matches the configured project queue name;
+4. only rows with `当前状态 = 1-待提交 (To Submit)` are eligible for automatic processing;
+5. preserve sheet row numbers because status writes must target the original row;
+6. take at most 100 eligible rows per invocation by default;
+7. a user may request a smaller batch for that invocation;
+8. there is no daily quota, scheduler, cron, or timed task requirement.
 
-- `observed_free` — `YES`, `NO`, `MIXED`, blank
-- `observed_login_required` — `YES`, `NO`, blank
-- `observed_login_method` — e.g. `GOOGLE`, `GITHUB`, `EMAIL_PASSWORD`, `OTHER`, blank
-- `observed_constraint` — e.g. `AI_ONLY`, `SAAS_ONLY`, `RECIPROCAL_REQUIRED`, free text when actually observed
-- `observed_follow` — `FOLLOW`, `NOFOLLOW`, `UGC`, `SPONSORED`, `MIXED`, blank; only after live-link verification
-- `last_verified_at`
-- `platform_notes`
+If a project has zero eligible rows, stop cleanly and report an empty queue; do not borrow rows from another project.
 
-The master sheet never stores project-specific execution status such as "Quick I Ching submitted".
+## Current-sheet status compatibility
 
-### 2. Project backlink management sheet
+Existing statuses observed in the live table:
 
-Each project has its own spreadsheet. The submission agent reads only the explicitly selected project's spreadsheet.
+- `1-待提交 (To Submit)` → internal `PENDING`
+- `2-排队审核中 (In Review)` → internal `UNDER_REVIEW`
+- `3-已排期待Launch (Scheduled)` → internal `SCHEDULED`
+- `4-已成功上线 (Live)` → internal `LIVE`
 
-Required columns:
+The submission agent additionally needs these execution outcomes. Until the discovery/write-side table schema is redesigned, write them as explicit text in the same `当前状态` cell:
 
-- `backlink_id` — foreign key to master sheet
-- `domain`
-- `submit_url`
-- `status`
-- `attempt_count`
-- `last_attempt_at`
-- `submitted_at`
-- `live_at`
-- `result_url`
-- `failure_reason`
-- `human_reason`
-- `project_notes`
+- `处理中 (In Progress)` → internal `IN_PROGRESS`
+- `已提交待确认 (Submitted)` → internal `SUBMITTED`
+- `需人工 (Needs Human)` → internal `NEEDS_HUMAN`
+- `失败 (Failed)` → internal `FAILED`
+- `不适用 (Not Applicable)` → internal `NOT_APPLICABLE`
 
-Optional cached platform columns may be copied from the master sheet for convenience, but they are read-only snapshots and must not be treated as authoritative if stale.
+Do not renumber or reinterpret the existing 1/2/3/4 legacy labels.
 
-## Project status machine
+Use `账号 / 备注` for concise compatibility-mode evidence/reason text until a future table migration introduces dedicated execution fields. Do not overwrite useful existing notes; append a timestamped agent entry.
 
-Allowed statuses:
+Use `提交日期` only when a final submission was actually completed. Use `实际落地链接 (Live URL)` only when a public/result URL is actually observed. Do not guess DoFollow or Google indexing values.
 
-- `PENDING` — ready for an attempt
-- `IN_PROGRESS` — currently being processed
-- `SUBMITTED` — final submission completed and success/receipt state observed
-- `UNDER_REVIEW` — platform explicitly says pending review/approval
-- `LIVE` — public listing/page verified live
-- `NEEDS_HUMAN` — execution blocked on a human-only step
-- `FAILED` — attempt failed and is not immediately retryable
-- `NOT_APPLICABLE` — target is incompatible with this project, e.g. AI-only target for a non-AI product
+## State machine
 
-Transitions:
+Internal states:
+
+- `PENDING`
+- `IN_PROGRESS`
+- `SUBMITTED`
+- `UNDER_REVIEW`
+- `SCHEDULED`
+- `LIVE`
+- `NEEDS_HUMAN`
+- `FAILED`
+- `NOT_APPLICABLE`
+
+Primary transitions:
 
 - `PENDING -> IN_PROGRESS`
-- `IN_PROGRESS -> SUBMITTED | UNDER_REVIEW | LIVE | NEEDS_HUMAN | FAILED | NOT_APPLICABLE`
-- `NEEDS_HUMAN -> IN_PROGRESS` after human takeover is completed
-- `SUBMITTED | UNDER_REVIEW -> LIVE` after later verification
-- `FAILED -> PENDING` only by explicit retry policy or user action
+- `IN_PROGRESS -> SUBMITTED | UNDER_REVIEW | SCHEDULED | LIVE | NEEDS_HUMAN | FAILED | NOT_APPLICABLE`
+- `NEEDS_HUMAN -> IN_PROGRESS` after the human step is completed
+- `SUBMITTED | UNDER_REVIEW | SCHEDULED -> LIVE` after later verified evidence
+- `FAILED -> PENDING` only by an explicit retry action/policy
 
-Queue recovery rule: an `IN_PROGRESS` row with no active execution checkpoint from the current run must be recovered to `PENDING` or `FAILED` according to the last recorded evidence; never leave abandoned rows permanently locked.
+The durable browser/runtime checkpoint is stored locally, not encoded into spreadsheet cells.
 
-## Discovery and deduplication
+If a previous run left a row as `处理中 (In Progress)` but there is no matching active local checkpoint, the agent must not blindly continue or mark success. It should recover conservatively to `1-待提交 (To Submit)` when no mutation evidence exists, or to `失败 (Failed)` when evidence shows an incomplete/failed attempt.
 
-Discovery owns deduplication before writing to the master sheet.
+## Private runtime configuration
 
-Dedup keys, in order:
+Reusable personal identity remains global:
 
-1. canonicalized exact submit URL when available;
-2. canonical domain + normalized submit path;
-3. canonical domain when only one known submission endpoint exists.
+`~/.backlink-autofill/submitter-profile.json`
 
-The discovery skill should not run Semrush or other authority scoring as a submission gate. It may reject only obvious junk/dead/malicious/link-farm entries using cheap evidence.
+Project assets remain isolated:
 
-This section defines the desired contract only. Implementing or changing the discovery skill is not part of the current v2 execution work.
+`~/.backlink-autofill/projects/<project-id>/`
 
-## Execution loop
+Add per-project private execution configuration:
 
-For the selected project:
+`~/.backlink-autofill/projects/<project-id>/execution.json`
 
-1. Read only that project's existing task spreadsheet.
-2. Select up to the configured run batch size from rows with `PENDING`.
-3. Mark the current row `IN_PROGRESS`.
-4. Load the shared submitter profile and selected project profile/assets.
-5. Start or reuse the automation browser profile.
-6. Execute the target in headless mode by default.
-7. Discover target constraints during execution instead of pre-researching them.
-8. If incompatible with the project, write `NOT_APPLICABLE`, update any observed platform fact in the master sheet, then continue.
-9. If a human-only condition appears, checkpoint the task, write `NEEDS_HUMAN`, and open a visible browser using the same persistent browser profile when technically possible.
-10. Otherwise finish the normal submission automatically, including the final submit action.
-11. Read the resulting browser state and classify the outcome.
-12. Update the project task row.
-13. Write newly observed platform facts to the master sheet.
-14. Continue until the per-run batch limit, queue exhaustion, or an agent-level stop condition is reached.
+Schema:
 
-Default run batch size: `100` pending rows, configurable per invocation.
+```json
+{
+  "schema_version": 1,
+  "project_id": "quick-iching",
+  "queue": {
+    "spreadsheet_id": "",
+    "sheet_name": "多项目外链进度与排期表",
+    "project_name": "Quick I Ching"
+  },
+  "default_batch_size": 100
+}
+```
 
-There is no default daily limit and no scheduler/timed execution requirement in v2.
+Private spreadsheet IDs are never committed to the public repository.
 
-## Headless and human takeover
+Global local runtime paths:
 
-### Normal path
+```text
+~/.backlink-autofill/
+├── browser-profile/
+├── runtime/
+│   └── <project-id>/
+└── recipes/
+```
 
-Use a persistent automation browser profile in headless mode. Preserve cookies, local storage, and account sessions across runs.
+`runtime/` contains transient per-row checkpoints and evidence metadata. `recipes/` contains domain-level reusable navigation/form mappings. Neither may contain passwords.
 
-### Human takeover conditions
+## Google connector boundary
 
-Examples:
+Google Sheets queue reads/writes use the official Google Drive connector binding. Browser automation must not be used to manipulate spreadsheet cells.
 
-- CAPTCHA / slider / Cloudflare challenge
-- 2FA / passkey / SMS / phone verification
-- manual email verification that cannot be completed automatically
-- payment or paid-plan selection
-- terms/authorization that require human judgment
-- missing required factual information
-- browser security block
+The connector workflow must:
 
-When one occurs:
+1. read spreadsheet metadata and exact visible sheet name;
+2. use bounded row searches/reads;
+3. preserve original row numbers;
+4. re-read the target row before writing when its state could have changed;
+5. write only the selected project's exact row;
+6. verify the written cell values after the update.
 
-1. checkpoint current target and form state;
-2. mark `NEEDS_HUMAN` with a concise `human_reason`;
-3. open/reopen the same persistent profile in headed/visible mode;
-4. navigate back to the blocked target and restore reversible form state if needed;
-5. tell the user exactly what must be completed;
-6. after takeover, resume from `IN_PROGRESS` and continue automation.
+This separation keeps spreadsheet operations deterministic and reduces browser/token overhead.
 
-If the browser backend cannot switch one running browser from headless to headed, close and reopen the same persistent profile and restore from checkpoint.
+## Browser execution boundary
 
-## Final submission policy
+The browser execution layer is a real local automation component, not narrative instructions.
 
-The old universal "human must click final Submit" rule is removed.
+Use Playwright Python `1.62.0` with a dedicated persistent browser profile under `~/.backlink-autofill/browser-profile/`.
 
-The agent may click the final submit/publish/review button automatically when:
+The browser layer must expose deterministic operations for Codex to call, including:
 
-- the target is an ordinary backlink/listing/profile submission;
+- open/navigate;
+- inspect interactive form state;
+- fill text;
+- select options;
+- click reversible navigation/actions;
+- upload a selected-project file;
+- read back field/page state;
+- click final submit when allowed;
+- capture checkpoint/evidence;
+- reopen the same persistent profile in visible mode for human takeover.
+
+For new/unknown sites, Codex reasons over a compact interactive DOM/form snapshot rather than the full page when possible.
+
+## Autonomous submission policy
+
+The old universal `human must click final Submit` rule is removed.
+
+The agent may execute final Submit/Publish/Send-for-review automatically when all are true:
+
+- it is an ordinary backlink/listing/profile submission;
 - no payment is required;
-- no human-only security challenge is present;
-- required content is sourced from approved project/shared data;
-- no unusual authorization or destructive side effect is detected.
+- no CAPTCHA, 2FA, passkey, SMS/phone verification or similar security challenge is present;
+- no unusual legal/authorization decision is presented;
+- all submitted facts come from approved project/shared data;
+- the browser can read back a clear resulting state.
 
-If any of those conditions fail, move to `NEEDS_HUMAN` instead of submitting.
+If these conditions are not met, do not guess or bypass. Move the row to `NEEDS_HUMAN` or another evidence-supported state.
 
-## Fact propagation rules
+## Headless default and human takeover
 
-Project execution may enrich the master sheet only with platform-level facts directly observed during the task.
+Normal execution uses the persistent automation browser profile in headless mode.
 
-Examples:
+Human takeover conditions include:
 
-- "Google login supported" -> master sheet
-- "Free submission accepted" -> master sheet
-- "AI-only products" -> master sheet
-- "Quick I Ching was submitted" -> project sheet only
-- "Quick I Ching listing URL" -> project sheet only
-- "Live link has rel=nofollow" -> master sheet as observed follow behavior, and project sheet may also record the result URL
+- CAPTCHA / slider / Cloudflare challenge;
+- 2FA / passkey / SMS / phone verification;
+- manual email verification that cannot be automated safely;
+- payment/paid plan choice;
+- unusual terms/authorization requiring judgment;
+- missing required factual information;
+- browser security/access block.
 
-No project execution status propagates to another project's task sheet.
+On takeover:
 
-## Recipe cache
+1. save a local checkpoint with project ID, sheet row number, domain, URL, form/evidence state and reason;
+2. write `需人工 (Needs Human)` plus a concise appended note to the exact project row;
+3. close the headless context cleanly;
+4. reopen the same persistent browser profile visibly;
+5. restore/navigate to the blocked target and restore reversible form state when necessary;
+6. tell the user only what intervention is required;
+7. after the user completes the human step, continue automation from the checkpoint.
 
-After a successful first run on a domain, save a local domain recipe describing stable form/navigation mappings.
+The implementation must not attempt to solve or bypass security challenges.
 
-Suggested location:
+## Project/data isolation
 
-`~/.backlink-autofill/recipes/<domain>.json`
+- Explicit project selection is mandatory.
+- Read queue rows only for the selected project name.
+- Write only the selected project's exact row numbers.
+- Load shared identity only from `submitter-profile.json`.
+- Load project facts/assets only from the selected public profile and `projects/<project-id>/`.
+- Never search sibling project directories for missing assets/facts.
+- Never use another project's sheet row, target URL, anchor, account note or result URL.
 
-A recipe may contain:
+## Domain recipe cache
 
-- known entry URL
-- login path/method
-- field mapping selectors
-- category navigation hints
-- upload selectors
-- success-state indicators
-- last verified timestamp
+After a verified successful run, save reusable platform-level behavior to:
 
-Recipes contain no passwords and no project-specific content.
+`~/.backlink-autofill/recipes/<canonical-domain>.json`
 
-Execution policy:
+Recipes may store selectors, navigation steps, login entry points, upload mappings and success indicators, but not passwords or project-specific text.
 
-- use a valid recipe first;
-- if selectors/state no longer match, fall back to DOM inspection + model reasoning;
-- refresh the recipe after a verified successful run.
+On later runs:
 
-This reduces model/token usage over time.
+1. try the valid recipe first;
+2. verify selectors/page state before mutating;
+3. fall back to fresh compact DOM inspection if the recipe is stale;
+4. refresh the recipe only after a verified successful flow.
 
-## Token strategy
+Recipe reuse is the primary long-term token optimization.
 
-Headless vs headed mode is not the primary token lever. Token savings come from:
+## Truthfulness/evidence contract
 
-1. extracting only relevant interactive DOM/form structure instead of sending full page content;
-2. reusing domain recipes;
-3. sending the model only changed/ambiguous portions of a familiar flow;
-4. using deeper model reasoning only for new or abnormal sites.
+No state transition is based only on model narration.
 
-## Safety and integrity constraints
+- `IN_PROGRESS` requires an execution start/checkpoint.
+- `SUBMITTED` requires an actual final submission action plus resulting page evidence.
+- `UNDER_REVIEW` requires explicit platform evidence of review/queue status.
+- `SCHEDULED` requires explicit platform evidence of a scheduled/launch state.
+- `LIVE` requires an actually reachable/result listing state.
+- `FAILED` requires recorded failure evidence/reason.
+- `NOT_APPLICABLE` requires an observed incompatibility with the selected project.
 
-- Never invent project or submitter facts.
-- Never solve or bypass CAPTCHA/security controls.
-- Never store passwords in repository, project profile, recipe, or chat.
-- Never borrow assets/data from another project.
-- Never mark `SUBMITTED`, `UNDER_REVIEW`, or `LIVE` without observed browser evidence.
-- Never write unverified Follow/Nofollow/free/login facts to the master sheet.
-- Apply per-domain backoff/rate limiting when a site shows throttling or abuse controls; do not introduce calendar-based scheduling or daily quotas.
+Spreadsheet writes must be verified by re-read.
 
-## Implementation impact
+## Follow-up work deliberately separated
 
-Existing components retained:
+After this execution path is proven, handle these in a separate design/implementation cycle:
 
-- project registry and strict project selection
-- shared private submitter profile
-- per-project private assets
-- browser-action truthfulness/read-back rules
-- Codex/ChatGPT reasoning model without a separate LLM API
+1. simplify backlink discovery to find + normalize + deduplicate + obvious-junk rejection;
+2. redesign the master backlink schema so legacy researched claims and execution-verified facts are distinct;
+3. change discovery/project-table write logic accordingly;
+4. add verified platform-fact propagation from execution into the redesigned master table;
+5. optionally migrate from the current multi-project execution tab to physically separate project spreadsheets if still valuable.
 
-New components required for the current execution scope:
-
-1. existing project task-sheet reader/writer
-2. master-sheet observed-fact writer
-3. queue/state-machine executor
-4. headless persistent browser execution path
-5. headed human-takeover path/checkpoint
-6. domain recipe cache
-7. configurable per-run batch size and per-domain backoff
-
-Not part of this implementation:
-
-- discovery-skill refactor;
-- master-to-project task generation;
-- project-sheet creation/population.
-
-This is an evolution of the existing plugin, not a replacement of the project/profile/asset model.
+This separation prevents the execution build from being blocked by a larger database/discovery migration.
