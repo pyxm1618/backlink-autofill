@@ -23,6 +23,8 @@ jobs:
           python3 -m playwright install --with-deps chromium
       - name: Test headless browser runtime
         run: python3 plugins/backlink-autofill/tests/test_browser_runtime.py -v
+      - name: Test headed human handoff
+        run: xvfb-run -a python3 plugins/backlink-autofill/tests/test_browser_handoff.py -v
       - name: Test personal installer and shared control plane in isolated HOME
         run: |
           export HOME="$RUNNER_TEMP/test-home"
