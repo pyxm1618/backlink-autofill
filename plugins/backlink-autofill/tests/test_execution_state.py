@@ -59,7 +59,7 @@ class ExecutionStateTests(unittest.TestCase):
             execution_state.delete_checkpoint(root, "quick-iching", 17)
             self.assertFalse(path.exists())
 
-    def test_checkpoint_rejects_cross_project_or_invalid_identity(self):
+    def test_checkpoint_rejects_cross_project_invalid_identity_or_sensitive_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with self.assertRaises(ValueError):
@@ -77,6 +77,15 @@ class ExecutionStateTests(unittest.TestCase):
                     "row_number": 0,
                     "backlink_id": "bl-1",
                     "state": "IN_PROGRESS",
+                })
+            with self.assertRaises(ValueError):
+                execution_state.save_checkpoint(root, {
+                    "schema_version": 1,
+                    "project_id": "quick-iching",
+                    "row_number": 3,
+                    "backlink_id": "bl-1",
+                    "state": "IN_PROGRESS",
+                    "replay_actions": [{"field": "password", "value": "do-not-store"}],
                 })
 
     def test_recipe_round_trips_by_canonical_domain(self):
