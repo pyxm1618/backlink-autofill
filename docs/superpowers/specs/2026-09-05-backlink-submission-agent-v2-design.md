@@ -1,13 +1,13 @@
 # Backlink Submission Agent v2 — Design
 
 Date: 2026-09-05
-Status: proposed / approved in chat, pending final user review before implementation plan
+Status: approved in chat with execution-scope revision; ready for implementation planning after user review
 
 ## Goal
 
 Turn the current single-target autofill workflow into a project-isolated backlink submission agent that:
 
-- reads only the selected project's task sheet;
+- starts from an already-existing selected project's task spreadsheet;
 - submits eligible pending targets automatically;
 - runs normal work headlessly;
 - opens a visible browser only when human intervention is required;
@@ -15,6 +15,28 @@ Turn the current single-target autofill workflow into a project-isolated backlin
 - writes only actually observed platform facts back to the master backlink sheet;
 - reuses one shared submitter profile and strictly isolated per-project assets;
 - keeps discovery analysis minimal and uses real submission as the main source of truth.
+
+## Scope boundary for this implementation
+
+This v2 implementation starts at **reading an existing project backlink-management spreadsheet**.
+
+In scope now:
+
+1. read the selected project's existing spreadsheet;
+2. select pending rows;
+3. execute submissions;
+4. update project execution status;
+5. propagate newly observed platform facts to the master sheet;
+6. handle headless execution, human takeover, and recipe reuse.
+
+Explicitly out of scope for this implementation:
+
+- discovering new backlink opportunities;
+- creating/populating a project spreadsheet from the master sheet;
+- changing the discovery skill's write path;
+- redesigning the discovery skill beyond documenting the desired minimal-analysis model.
+
+Those discovery/write-side changes are a separate follow-up task.
 
 ## Core principles
 
@@ -26,6 +48,7 @@ Turn the current single-target autofill workflow into a project-isolated backlin
 6. **Autonomous by default.** Normal submissions may complete automatically, including the final submission action, when no human-only condition is present.
 7. **Human only on exception.** CAPTCHA, 2FA, passkey, phone verification, manual payment/terms decisions, missing facts, or similar conditions move the task to `NEEDS_HUMAN` and open a visible browser.
 8. **Evidence before status.** `SUBMITTED` or `LIVE` may only be written after browser evidence confirms the corresponding state.
+9. **Run-based, not time-based.** The agent processes a bounded batch when invoked. v2 has no scheduler, cron, daily quota, or calendar-based task system.
 
 ## Google Sheets topology
 
@@ -110,7 +133,7 @@ Transitions:
 - `SUBMITTED | UNDER_REVIEW -> LIVE` after later verification
 - `FAILED -> PENDING` only by explicit retry policy or user action
 
-Queue recovery rule: an `IN_PROGRESS` row older than the configured stale threshold with no active execution checkpoint must be recovered to `PENDING` or `FAILED` according to the last recorded evidence; never leave abandoned rows permanently locked.
+Queue recovery rule: an `IN_PROGRESS` row with no active execution checkpoint from the current run must be recovered to `PENDING` or `FAILED` according to the last recorded evidence; never leave abandoned rows permanently locked.
 
 ## Discovery and deduplication
 
@@ -124,13 +147,15 @@ Dedup keys, in order:
 
 The discovery skill should not run Semrush or other authority scoring as a submission gate. It may reject only obvious junk/dead/malicious/link-farm entries using cheap evidence.
 
+This section defines the desired contract only. Implementing or changing the discovery skill is not part of the current v2 execution work.
+
 ## Execution loop
 
 For the selected project:
 
-1. Read only that project's task spreadsheet.
-2. Select rows with `PENDING`, subject to the daily limit.
-3. Mark the row `IN_PROGRESS` with timestamp.
+1. Read only that project's existing task spreadsheet.
+2. Select up to the configured run batch size from rows with `PENDING`.
+3. Mark the current row `IN_PROGRESS`.
 4. Load the shared submitter profile and selected project profile/assets.
 5. Start or reuse the automation browser profile.
 6. Execute the target in headless mode by default.
@@ -141,9 +166,11 @@ For the selected project:
 11. Read the resulting browser state and classify the outcome.
 12. Update the project task row.
 13. Write newly observed platform facts to the master sheet.
-14. Continue until the daily limit, queue exhaustion, or an agent-level stop condition is reached.
+14. Continue until the per-run batch limit, queue exhaustion, or an agent-level stop condition is reached.
 
-Default daily submission limit: `100` per project, configurable.
+Default run batch size: `100` pending rows, configurable per invocation.
+
+There is no default daily limit and no scheduler/timed execution requirement in v2.
 
 ## Headless and human takeover
 
@@ -197,7 +224,7 @@ Examples:
 - "Google login supported" -> master sheet
 - "Free submission accepted" -> master sheet
 - "AI-only products" -> master sheet
-- "Quick I Ching was submitted on 2026-09-05" -> project sheet only
+- "Quick I Ching was submitted" -> project sheet only
 - "Quick I Ching listing URL" -> project sheet only
 - "Live link has rel=nofollow" -> master sheet as observed follow behavior, and project sheet may also record the result URL
 
@@ -248,7 +275,7 @@ Headless vs headed mode is not the primary token lever. Token savings come from:
 - Never borrow assets/data from another project.
 - Never mark `SUBMITTED`, `UNDER_REVIEW`, or `LIVE` without observed browser evidence.
 - Never write unverified Follow/Nofollow/free/login facts to the master sheet.
-- Keep a per-day and per-domain rate limit so automation does not hammer a site.
+- Apply per-domain backoff/rate limiting when a site shows throttling or abuse controls; do not introduce calendar-based scheduling or daily quotas.
 
 ## Implementation impact
 
@@ -260,14 +287,20 @@ Existing components retained:
 - browser-action truthfulness/read-back rules
 - Codex/ChatGPT reasoning model without a separate LLM API
 
-New components required:
+New components required for the current execution scope:
 
-1. project task-sheet reader/writer
+1. existing project task-sheet reader/writer
 2. master-sheet observed-fact writer
 3. queue/state-machine executor
 4. headless persistent browser execution path
 5. headed human-takeover path/checkpoint
 6. domain recipe cache
-7. configurable daily/rate limits
+7. configurable per-run batch size and per-domain backoff
+
+Not part of this implementation:
+
+- discovery-skill refactor;
+- master-to-project task generation;
+- project-sheet creation/population.
 
 This is an evolution of the existing plugin, not a replacement of the project/profile/asset model.
