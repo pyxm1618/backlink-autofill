@@ -194,7 +194,7 @@ mode = create_or_reuse
 
 For an existing login, it may use `existing_only` only when this system already has a credential for the current domain/account. Otherwise it pauses for the human rather than guessing.
 
-If a real human-only blocker occurs, the current row becomes `需人工`, the batch pauses, and the runtime reopens the **same persistent browser profile** visibly. Safe reversible state may be replayed, including `credential_fill` without exposing the secret. After the human step, the agent resumes from the checkpoint instead of blindly starting over.
+If a real human-only blocker occurs (e.g. Email verification code, CAPTCHA, 2FA), the current row becomes `需人工`, its browser tab is preserved in the persistent Chrome window, and a durable `human_pending` record is stored. The batch does NOT pause—subsequent tasks continue execution immediately. The user can complete the human step anytime and instruct the agent to resume from the preserved tab and checkpoint without repeating registration or final submit.
 
 ## Evidence and truthfulness
 

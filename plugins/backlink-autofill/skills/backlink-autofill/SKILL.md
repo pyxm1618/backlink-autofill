@@ -179,17 +179,21 @@ Fast handling:
 
 ### 6. Login and credential behavior
 
-Reuse the persistent browser profile.
+Default to the persistent CDP Chrome session (`http://127.0.0.1:9222`, or `BACKLINK_BROWSER_CDP_URL`) using existing `browser.contexts[0]`.
 
-- already logged in → continue;
-- ordinary OAuth with already-authorized session and no challenge → may continue automatically;
-- confirmed new backlink-platform account with Password / Confirm Password fields → use `credential_fill` with `credential = site_password`, `mode = create_or_reuse`, and the approved registration account;
-- existing backlink-platform login → use `credential_fill` with `mode = existing_only` **only if** a credential already exists for that current domain/account;
-- existing login with no stored site credential → human handoff; do not invent a new password for a login form;
-- Google/email/GitHub/other primary account password → human/browser credential manager; never import or read it;
-- CAPTCHA/Cloudflare/2FA/passkey/SMS/phone verification/payment → human handoff.
-
-`credential_fill` must resolve the credential by the **current page domain**, not an arbitrary domain supplied by the model. It may return only non-secret evidence such as `{credential: site_password, verified: true}`.
+Login priority for each platform:
+1. **Existing session on target site** → reuse immediately.
+2. **Target site supports Google OAuth** and persistent CDP Chrome has an active Google session → try Google OAuth first.
+   - If Google displays an existing account chooser or standard consent screen → proceed automatically.
+   - If Google prompts for the primary Google password, 2FA, passkey, or security challenge → **strictly forbid reading, generating, or filling Google credentials**; do not bypass security challenges; fall back to independent site registration or human handoff.
+3. **Platform supports standard email/password registration** → use `credential_fill` with `mode = create_or_reuse` and the approved registration email from profile.
+   - For an existing backlink-platform login form: use `credential_fill` with `mode = existing_only` only if a credential already exists for that current domain/account; do not invent a new password for an existing login form.
+4. **Credential domain isolation (two-layer defense)**:
+   - **Layer 1 (Target Domain Allow Rule)**: `credential_fill` may ONLY fill passwords when the current page domain matches the explicit `target_domain` of the backlink platform.
+   - **Layer 2 (Third-party IdP blocklist)**: `credential_fill` is strictly forbidden on any third-party Identity Provider domain (such as `accounts.google.com`, `github.com`, `x.com`, `twitter.com`, `apple.com`, `microsoft.com`).
+5. **Human blockers (e.g. EMAIL_OTP, CAPTCHA, 2FA, SMS)**:
+   - `EMAIL_OTP` requires composite evidence: both verification code cues and explicit email/inbox context.
+   - Enter `需人工`, retain the browser tab, persist `human_pending` record, and **continue the batch immediately without stopping**.
 
 ### 7. Build and execute an explicit action plan
 
@@ -221,28 +225,34 @@ Uploads must stay inside the selected project's private asset root. Derived imag
 
 Do not stop merely because the button is named Submit/Publish/Launch/Post/Create Listing/Send for Review. Do not autonomously make payments or accept unusual commitments.
 
-### 9. Human handoff
+### 9. Human handoff and non-blocking batch execution
 
-Use human handoff for security challenge, missing primary credential, payment, unusual authorization, mandatory external site change, or other genuinely human-only step.
+Core rule: **`NEEDS_HUMAN` pauses only the current row; it NEVER stops the batch.**
 
-When handing off:
+When encountering an email verification code, CAPTCHA, 2FA, passkey, payment, or other genuine human blocker:
 
-1. save credential-free checkpoint;
-2. write exact project row `需人工` + concrete `原因/备注` + concise `证据摘要` and verify by re-read;
-3. close headless browser to unlock the persistent profile;
-4. launch `handoff-start` on the same profile;
-5. replay only safe reversible actions. `credential_fill` is safe to replay because the secret remains in the local credential store and does not enter replay JSON; never replay arbitrary click/final submit;
-6. pause the batch and tell the user only the required action.
+1. Save credential-free row checkpoint;
+2. Save durable `human_pending` record under `~/.backlink-autofill/runtime/human-pending/` including project ID, backlink ID, current URL, blocker type, and CDP `target_id`;
+3. Write exact project Sheet row `需人工` + concrete `原因/备注` + concise `证据摘要` and verify by re-read;
+4. In persistent CDP Chrome mode: keep the active browser Tab open in the external Chrome (do not close it); in headless standalone fallback mode: launch `handoff-start` on the profile to present the visible window;
+5. Add the task to the current batch's human-pending collection;
+6. **Immediately proceed to the next `待提交` row in the queue.**
 
-Do not continue other rows while the profile is held by an active handoff.
+Never pause or abort the batch because one task requires human intervention. Multiple `HUMAN_PENDING` tabs may coexist simultaneously without conflict.
 
-After the user finishes:
+### 9a. Human pending resume protocol
 
-1. read `handoff-status`;
-2. request `handoff-finish`;
-3. wait for `FINISHED`, inspect final page state;
-4. if blocker remains, keep `需人工`;
-5. otherwise classify result, write/verify exact row, then resume headless work.
+When the user completes the human step in the visible Chrome window and asks to resume (e.g. "FoundrList verification done"):
+
+1. Attach to the persistent CDP Chrome session (`127.0.0.1:9222`);
+2. Locate the durable `human_pending` record and locate the original Tab by persisted `target_id`;
+3. Inspect current page state to confirm the human blocker has been resolved (e.g. verification code accepted, logged in, reached next form step);
+4. Resume execution from the checkpoint;
+5. Once a stable terminal status (`已提交`, `审核中`, `已上线`, `失败`, `不适用`) is verified and written to Sheet, remove the `human_pending` record;
+6. **Conservative recovery rule**: if the original `target_id` cannot be found or the tab was closed:
+   - **Never auto-re-register**;
+   - **Never auto-re-submit**;
+   - Perform conservative read-back inspection; if safe continuation cannot be proven beyond doubt, retain `需人工`.
 
 ### 10. Classify outcome from evidence
 
@@ -290,9 +300,9 @@ After a verified stable flow, save selectors/navigation/success indicators. Neve
 
 ### 14. Finish or continue
 
-Delete completed-row checkpoints once the row reaches a non-ambiguous terminal state. Keep checkpoint for `需人工`/ambiguous interrupted work.
+Delete completed-row checkpoints once the row reaches a non-ambiguous terminal state. Keep checkpoint and durable `human_pending` record for `需人工`/ambiguous interrupted work.
 
-Continue until batch exhausted, invocation limit reached, human handoff pauses the run, or a control-plane/browser-level failure makes continuation unsafe.
+Continue processing rows until the batch is exhausted or the invocation limit is reached. Single-task human blockers (`需人工`) must never terminate the batch; record them and immediately proceed to subsequent rows.
 
 ## Truthfulness contract
 
@@ -305,8 +315,14 @@ Never upgrade state based on narration, prior conversation, or inference.
 
 ## User-facing behavior
 
-Ordinary automatic rows: no visible browser, no per-row confirmation.
+Ordinary automatic rows require no visible confirmation during execution.
 
-At uninterrupted batch end, report compact totals.
+At batch end, report compact totals:
+1. **Summary of completed rows**: counts of `已提交`, `审核中`, `已上线`, `不适用`, `失败`;
+2. **Pending human tasks summary**: list of all rows that entered `需人工` during the batch, specifying:
+   - Target site/domain;
+   - Blocker type (e.g. Email verification code, CAPTCHA, 2FA);
+   - Note that their tabs are preserved in the persistent Chrome window;
+   - Prompt that the user can verify them anytime and simply tell the agent to resume.
 
-For `需人工`, open visible handoff and report only platform/domain, required human action, and that batch is paused. Never print generated/stored passwords unless the user explicitly asks to retrieve one through an appropriate secure local workflow.
+Never print generated/stored passwords unless the user explicitly asks to retrieve one through an appropriate secure local workflow.
