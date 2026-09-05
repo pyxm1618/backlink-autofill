@@ -17,6 +17,8 @@ jobs:
         run: node scripts/validate-plugin.mjs
       - name: Test execution state and recipe storage
         run: python3 plugins/backlink-autofill/tests/test_execution_state.py -v
+      - name: Test headless browser runtime
+        run: python3 plugins/backlink-autofill/tests/test_browser_runtime.py -v
       - name: Test personal installer and shared control plane in isolated HOME
         run: |
           export HOME="$RUNNER_TEMP/test-home"
