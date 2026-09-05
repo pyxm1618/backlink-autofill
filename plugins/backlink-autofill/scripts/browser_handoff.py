@@ -16,7 +16,8 @@ from typing import Any
 from browser_runtime import BrowserRuntime, BrowserRuntimeError, snapshot_page
 
 _HANDOFF_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_SAFE_REPLAY_ACTIONS = {"fill", "select", "check", "upload"}
+_SAFE_REPLAY_ACTIONS = {"fill", "credential_fill", "select", "check", "upload"}
+_CREDENTIAL_FORBIDDEN_KEYS = {"value", "password", "passwd", "secret", "token", "api_key", "apikey"}
 
 
 class HandoffError(RuntimeError):
@@ -63,12 +64,32 @@ def _validate_replay_actions(actions: Any) -> list[dict[str, Any]]:
         raise HandoffError("INVALID_REPLAY_ACTIONS", "replay actions must be a JSON array")
     if len(actions) > 100:
         raise HandoffError("INVALID_REPLAY_ACTIONS", "replay actions may contain at most 100 actions")
+
     for index, action in enumerate(actions):
         if not isinstance(action, dict) or action.get("type") not in _SAFE_REPLAY_ACTIONS:
             raise HandoffError(
                 "UNSAFE_REPLAY_ACTION",
-                f"handoff replay action {index} must be fill/select/check/upload; click and submit are never replayed",
+                f"handoff replay action {index} must be fill/credential_fill/select/check/upload; click and submit are never replayed",
             )
+
+        if action.get("type") == "credential_fill":
+            normalized_keys = {str(key).lower().replace("-", "_") for key in action}
+            if normalized_keys & _CREDENTIAL_FORBIDDEN_KEYS:
+                raise HandoffError(
+                    "UNSAFE_REPLAY_ACTION",
+                    f"credential replay action {index} must not contain a secret value",
+                )
+            if action.get("credential") != "site_password":
+                raise HandoffError(
+                    "UNSAFE_REPLAY_ACTION",
+                    f"credential replay action {index} must use site_password",
+                )
+            if action.get("mode") not in {"create_or_reuse", "existing_only"}:
+                raise HandoffError(
+                    "UNSAFE_REPLAY_ACTION",
+                    f"credential replay action {index} has an invalid mode",
+                )
+
     return actions
 
 
@@ -81,6 +102,7 @@ def start_handoff(
     handoff_id: str,
     replay_actions: Any = None,
     allowed_upload_root: Path | None = None,
+    credential_root: Path | None = None,
 ) -> dict[str, Any]:
     session = _session_dir(handoff_root, handoff_id)
     session.mkdir(parents=True, exist_ok=True)
@@ -101,6 +123,7 @@ def start_handoff(
         "browser_channel": browser_channel,
         "url": url,
         "allowed_upload_root": str(Path(allowed_upload_root).expanduser().resolve()) if allowed_upload_root else None,
+        "credential_root": str(Path(credential_root).expanduser().resolve()) if credential_root else None,
         "replay_actions": replay,
     }
     _atomic_json(session / "request.json", request)
@@ -155,12 +178,14 @@ def _worker(session: Path) -> int:
         replay = _validate_replay_actions(request.get("replay_actions"))
         profile_dir = Path(request["profile_dir"])
         upload_root = Path(request["allowed_upload_root"]) if request.get("allowed_upload_root") else None
+        credential_root = Path(request["credential_root"]) if request.get("credential_root") else None
 
         with BrowserRuntime(
             profile_dir,
             browser_channel=request.get("browser_channel") or "chrome",
             headless=False,
             allowed_upload_root=upload_root,
+            credential_root=credential_root,
         ) as runtime:
             if replay:
                 result = runtime.execute(request["url"], replay)
