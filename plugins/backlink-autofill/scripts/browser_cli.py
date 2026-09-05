@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     execute_parser = subparsers.add_parser("execute")
     _add_common(execute_parser)
     execute_parser.add_argument("--allowed-upload-root")
+    execute_parser.add_argument("--credential-root")
     execute_parser.add_argument("--actions-json", required=True)
 
     handoff_start_parser = subparsers.add_parser("handoff-start")
@@ -108,6 +109,7 @@ def main() -> int:
                 browser_channel=args.browser_channel,
                 headless=not args.headed,
                 allowed_upload_root=Path(args.allowed_upload_root) if args.allowed_upload_root else None,
+                credential_root=Path(args.credential_root) if args.credential_root else None,
             ) as runtime:
                 result = runtime.execute(args.url, actions)
 
