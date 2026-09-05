@@ -8,14 +8,30 @@ should be submitted or invent any project content.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import urlparse
+from urllib.request import urlopen
 
 from playwright.sync_api import BrowserContext, Locator, Page, Playwright, sync_playwright
 
 from credential_store import CredentialStoreError, get_site_password
+
+DEFAULT_CDP_URL = "http://127.0.0.1:9222"
+
+
+def _probe_cdp(url: str, timeout: float = 0.5) -> dict | None:
+    try:
+        req_url = url.rstrip("/") + "/json/version"
+        with urlopen(req_url, timeout=timeout) as resp:
+            data = json.load(resp)
+            return data if isinstance(data, dict) and data.get("Browser") else None
+    except (OSError, URLError, ValueError, json.JSONDecodeError):
+        return None
 
 MAX_BODY_EXCERPT = 4000
 MAX_ACTIONS = 100
@@ -253,11 +269,34 @@ def detect_human_blocker(page: Page, body_excerpt: str | None = None) -> dict[st
     if "passkey" in text or "webauthn" in field_text:
         return {"code": "PASSKEY", "reason": "Passkey authentication requires human interaction"}
 
+    # 邮箱验证码组合证据检测：文案中必须明确具有邮箱/收件箱与验证码的关联上下文
+    email_otp_phrases = (
+        "verify your email",
+        "verification email",
+        "code sent to your email",
+        "sent a code to",
+        "code sent to",
+        "sent to your inbox",
+        "check your email",
+        "check your inbox",
+        "email verification",
+        "email code",
+    )
+    has_explicit_email_otp_phrase = any(phrase in text for phrase in email_otp_phrases)
+    has_email_and_code = ("email" in text or "inbox" in text) and any(
+        term in text for term in ("verification code", "security code", "one-time code", "6-digit code", "confirmation code")
+    )
+    if has_explicit_email_otp_phrase or has_email_and_code:
+        return {"code": "EMAIL_OTP", "reason": "Email verification code required"}
+
     if "one-time-code" in field_text or any(
         phrase in text
-        for phrase in ("two-factor authentication", "two factor authentication", "2fa", "authenticator code", "verification code")
+        for phrase in ("two-factor authentication", "two factor authentication", "2fa", "authenticator code")
     ):
-        return {"code": "TWO_FACTOR", "reason": "Two-factor or verification-code step detected"}
+        return {"code": "TWO_FACTOR", "reason": "Two-factor authentication step detected"}
+
+    if any(phrase in text for phrase in ("verification code", "security code", "enter code", "confirmation code")):
+        return {"code": "VERIFICATION_CHALLENGE", "reason": "Verification challenge step detected"}
 
     if any(token in field_text for token in ("cc-number", "cardnumber", "card-number")):
         return {"code": "PAYMENT", "reason": "Payment card entry requires human approval"}
@@ -291,6 +330,12 @@ class BrowserRuntime:
         allowed_upload_root: Path | None = None,
         credential_root: Path | None = None,
         timeout_ms: int = 30_000,
+        cdp_url: str | None = None,
+        allow_local_fallback: bool = False,
+        keep_on_human_blocker: bool = False,
+        keep_tab: bool = False,
+        resume_target_id: str | None = None,
+        target_domain: str | None = None,
     ):
         self.profile_dir = Path(profile_dir).expanduser().resolve()
         self.browser_channel = browser_channel
@@ -300,13 +345,109 @@ class BrowserRuntime:
         )
         self.credential_root = Path(credential_root).expanduser().resolve() if credential_root is not None else None
         self.timeout_ms = timeout_ms
+        self.cdp_url = cdp_url
+        self.allow_local_fallback = allow_local_fallback
+        self.keep_on_human_blocker = keep_on_human_blocker
+        self.keep_tab = keep_tab
+        self.resume_target_id = resume_target_id
+        self.target_domain = target_domain
+        self.is_external_cdp: bool = False
+        self.target_id: str | None = None
+        self._stopped_for_human: bool = False
         self._playwright: Playwright | None = None
+        self._browser = None
         self._context: BrowserContext | None = None
         self.page: Page | None = None
+
+    @property
+    def context(self) -> BrowserContext | None:
+        return self._context
+
+    def _find_page_by_target_id(self, target_id: str) -> Page | None:
+        assert self._context is not None
+        for page in self._context.pages:
+            try:
+                session = self._context.new_cdp_session(page)
+                info = session.send("Target.getTargetInfo")
+                tid = info.get("targetInfo", {}).get("targetId")
+                session.detach()
+                if tid == target_id:
+                    return page
+            except Exception:
+                pass
+        return None
+
+    def _get_page_target_id(self, page: Page) -> str | None:
+        if not self.is_external_cdp or self._context is None:
+            return None
+        try:
+            session = self._context.new_cdp_session(page)
+            info = session.send("Target.getTargetInfo")
+            tid = info.get("targetInfo", {}).get("targetId")
+            session.detach()
+            return tid
+        except Exception:
+            return None
 
     def __enter__(self) -> "BrowserRuntime":
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = sync_playwright().start()
+
+        candidate_cdp = (
+            self.cdp_url
+            or os.environ.get("BACKLINK_BROWSER_CDP_URL")
+            or os.environ.get("SEO_BROWSER_CDP_URL")
+        )
+        allow_fallback = (
+            self.allow_local_fallback
+            or os.environ.get("BACKLINK_ALLOW_LOCAL_FALLBACK", "").strip().lower() in {"1", "true", "yes"}
+        )
+        if not candidate_cdp and not allow_fallback:
+            candidate_cdp = DEFAULT_CDP_URL
+
+        cdp_ready = _probe_cdp(candidate_cdp) if candidate_cdp else None
+
+        if candidate_cdp and cdp_ready:
+            try:
+                self._browser = self._playwright.chromium.connect_over_cdp(candidate_cdp)
+                if not self._browser.contexts:
+                    raise BrowserRuntimeError("NO_BROWSER_CONTEXT", "Connected CDP browser has no contexts")
+                self._context = self._browser.contexts[0]
+                self.is_external_cdp = True
+            except Exception as exc:
+                if isinstance(exc, BrowserRuntimeError):
+                    raise
+                self._playwright.stop()
+                self._playwright = None
+                raise BrowserRuntimeError("BROWSER_CONNECT_FAILED", f"Could not connect over CDP to {candidate_cdp}: {exc}") from exc
+
+            self._context.set_default_timeout(self.timeout_ms)
+
+            if self.resume_target_id:
+                matched_page = self._find_page_by_target_id(self.resume_target_id)
+                if matched_page is None:
+                    self._playwright.stop()
+                    self._playwright = None
+                    raise BrowserRuntimeError(
+                        "TARGET_TAB_LOST",
+                        f"Target tab {self.resume_target_id} was not found in browser session",
+                    )
+                self.page = matched_page
+                self.target_id = self.resume_target_id
+            else:
+                self.page = self._context.new_page()
+                self.target_id = self._get_page_target_id(self.page)
+
+            return self
+
+        if candidate_cdp and not cdp_ready and not allow_fallback:
+            self._playwright.stop()
+            self._playwright = None
+            raise BrowserRuntimeError(
+                "BROWSER_HOST_UNAVAILABLE",
+                f"Fixed CDP browser host at {candidate_cdp} is unavailable. Refusing silent fallback in production mode.",
+            )
+
         try:
             self._context = self._playwright.chromium.launch_persistent_context(
                 user_data_dir=str(self.profile_dir),
@@ -324,20 +465,38 @@ class BrowserRuntime:
 
         self._context.set_default_timeout(self.timeout_ms)
         self.page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        self.target_id = self._get_page_target_id(self.page)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self._context is not None:
-            try:
-                self._context.close()
-            except Exception:
-                pass
-        if self._playwright is not None:
-            try:
-                self._playwright.stop()
-            except Exception:
-                pass
+        if self.is_external_cdp:
+            if self.page is not None:
+                should_keep = self.keep_tab or (self.keep_on_human_blocker and self._stopped_for_human)
+                if not should_keep:
+                    try:
+                        if not self.page.is_closed():
+                            self.page.close()
+                    except Exception:
+                        pass
+            if self._playwright is not None:
+                try:
+                    self._playwright.stop()
+                except Exception:
+                    pass
+        else:
+            if self._context is not None:
+                try:
+                    self._context.close()
+                except Exception:
+                    pass
+            if self._playwright is not None:
+                try:
+                    self._playwright.stop()
+                except Exception:
+                    pass
+
         self._context = None
+        self._browser = None
         self._playwright = None
         self.page = None
 
@@ -352,12 +511,20 @@ class BrowserRuntime:
                 "NAVIGATION_FAILED",
                 f"Navigation failed: {type(exc).__name__}",
             ) from exc
-        return snapshot_page(self.page)
+        snapshot = snapshot_page(self.page)
+        if snapshot.get("human_blocker"):
+            self._stopped_for_human = True
+        return snapshot
 
     def inspect(self, url: str) -> dict[str, Any]:
-        self.navigate(url)
-        assert self.page is not None
-        return {"ok": True, "page": snapshot_page(self.page)}
+        snapshot = self.navigate(url)
+        return {
+            "ok": True,
+            "page": snapshot,
+            "target_id": self.target_id,
+            "is_external_cdp": self.is_external_cdp,
+            "stopped_for_human": self._stopped_for_human,
+        }
 
     def _unique_locator(self, selector: str) -> Locator:
         if not isinstance(selector, str) or not selector.strip():
@@ -424,13 +591,41 @@ class BrowserRuntime:
         account = action.get("account")
         assert self.page is not None
         parsed = urlparse(self.page.url)
-        domain = parsed.hostname
-        if not domain:
+        current_domain = (parsed.hostname or "").lower()
+        if not current_domain:
             raise BrowserRuntimeError("INVALID_CREDENTIAL_DOMAIN", "could not resolve current page domain")
+
+        # 第一层防御：Target Domain Allow Rule
+        if self.target_domain:
+            allowed = self.target_domain.lower().strip()
+            if current_domain != allowed and not current_domain.endswith("." + allowed):
+                raise BrowserRuntimeError(
+                    "CREDENTIAL_TARGET_MISMATCH",
+                    f"Current page domain {current_domain!r} does not match allowed target domain {allowed!r}",
+                )
+
+        # 第二层防御：通用第三方 Identity Provider 域名黑名单
+        forbidden_idps = (
+            "google.com", "accounts.google.com",
+            "github.com",
+            "twitter.com", "x.com",
+            "apple.com", "appleid.apple.com",
+            "microsoft.com", "login.microsoftonline.com",
+            "facebook.com",
+            "linkedin.com",
+            "auth0.com", "okta.com",
+        )
+        for idp in forbidden_idps:
+            if current_domain == idp or current_domain.endswith("." + idp):
+                raise BrowserRuntimeError(
+                    "PROTECTED_OAUTH_DOMAIN",
+                    f"credential_fill is strictly forbidden on third-party identity provider domain {current_domain!r}",
+                )
+
         try:
             return get_site_password(
                 self.credential_root,
-                domain,
+                current_domain,
                 account=account,
                 mode=mode,
             )
@@ -448,11 +643,14 @@ class BrowserRuntime:
         evidence: list[dict[str, Any]] = []
 
         if initial_page.get("human_blocker"):
+            self._stopped_for_human = True
             return {
                 "ok": True,
                 "actions": evidence,
                 "page": initial_page,
                 "stopped_for_human": True,
+                "target_id": self.target_id,
+                "is_external_cdp": self.is_external_cdp,
             }
 
         for index, action in enumerate(actions):
@@ -529,11 +727,14 @@ class BrowserRuntime:
 
             current_page = snapshot_page(self.page)
             if current_page.get("human_blocker"):
+                self._stopped_for_human = True
                 return {
                     "ok": True,
                     "actions": evidence,
                     "page": current_page,
                     "stopped_for_human": True,
+                    "target_id": self.target_id,
+                    "is_external_cdp": self.is_external_cdp,
                 }
 
         return {
@@ -541,4 +742,6 @@ class BrowserRuntime:
             "actions": evidence,
             "page": snapshot_page(self.page),
             "stopped_for_human": False,
+            "target_id": self.target_id,
+            "is_external_cdp": self.is_external_cdp,
         }

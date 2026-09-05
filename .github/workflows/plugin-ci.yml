@@ -8,6 +8,8 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      BACKLINK_ALLOW_LOCAL_FALLBACK: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,6 +25,12 @@ jobs:
           python3 -m playwright install --with-deps chromium
       - name: Test headless browser runtime
         run: python3 plugins/backlink-autofill/tests/test_browser_runtime.py -v
+      - name: Test CDP persistent session
+        run: python3 plugins/backlink-autofill/tests/test_cdp_session.py -v
+      - name: Test OAuth security and composite EMAIL_OTP
+        run: python3 plugins/backlink-autofill/tests/test_oauth_security.py -v
+      - name: Test tab isolation and resume protocol
+        run: python3 plugins/backlink-autofill/tests/test_tab_isolation.py -v
       - name: Test headed human handoff
         run: xvfb-run -a python3 plugins/backlink-autofill/tests/test_browser_handoff.py -v
       - name: Test personal installer and shared control plane in isolated HOME

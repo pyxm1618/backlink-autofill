@@ -23,6 +23,7 @@ class QuietHandler(SimpleHTTPRequestHandler):
 class BrowserRuntimeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        os.environ["BACKLINK_ALLOW_LOCAL_FALLBACK"] = "1"
         handler = partial(QuietHandler, directory=str(FIXTURES))
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
@@ -31,6 +32,7 @@ class BrowserRuntimeTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        os.environ.pop("BACKLINK_ALLOW_LOCAL_FALLBACK", None)
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=2)

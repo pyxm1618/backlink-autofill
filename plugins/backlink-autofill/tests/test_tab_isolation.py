@@ -166,7 +166,7 @@ class TabIsolationAndResumeTests(unittest.TestCase):
             with BrowserRuntime(
                 profile_dir=Path(self.user_data_dir),
                 cdp_url=self.cdp_url,
-                keep_on_human_blocker=True,
+                keep_tab=True,
             ) as rt1:
                 rt1.navigate(f"{self.base_url}/form.html")
                 target_id = rt1.target_id
