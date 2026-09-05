@@ -33,7 +33,7 @@ def _probe_cdp(url: str, timeout: float = 0.5) -> dict | None:
     except (OSError, URLError, ValueError, json.JSONDecodeError):
         return None
 
-MAX_BODY_EXCERPT = 4000
+MAX_BODY_EXCERPT = 32000
 MAX_ACTIONS = 100
 _ALLOWED_ACTIONS = {"fill", "credential_fill", "select", "check", "upload", "click", "submit"}
 _SENSITIVE_FIELD_TERMS = (
@@ -286,6 +286,7 @@ def detect_human_blocker(page: Page, body_excerpt: str | None = None) -> dict[st
     # 邮箱验证码组合证据检测：文案中必须明确具有邮箱/收件箱与验证码的关联上下文
     email_otp_phrases = (
         "verify your email",
+        "verify email",
         "verification email",
         "code sent to your email",
         "sent a code to",
@@ -297,16 +298,38 @@ def detect_human_blocker(page: Page, body_excerpt: str | None = None) -> dict[st
         "email code",
     )
     has_explicit_email_otp_phrase = any(phrase in text for phrase in email_otp_phrases)
-    has_email_and_code = ("email" in text or "inbox" in text) and any(
-        term in text for term in ("verification code", "security code", "one-time code", "6-digit code", "confirmation code")
+    has_email_context = "email" in text or "inbox" in text
+    has_otp_cue = any(
+        term in text or term in field_text
+        for term in (
+            "verification code",
+            "security code",
+            "one-time-code",
+            "one-time code",
+            "6-digit code",
+            "confirmation code",
+            "enter code",
+            "resend code",
+        )
     )
+    has_email_and_code = has_email_context and has_otp_cue
+
     if has_explicit_email_otp_phrase or has_email_and_code:
         return {"code": "EMAIL_OTP", "reason": "Email verification code required"}
 
-    if "one-time-code" in field_text or any(
+    # 双因子认证：明确包含 2FA/authenticator 提示，或在没有邮箱上下文时的独立 one-time-code
+    has_explicit_2fa_phrase = any(
         phrase in text
-        for phrase in ("two-factor authentication", "two factor authentication", "2fa", "authenticator code")
-    ):
+        for phrase in (
+            "two-factor authentication",
+            "two factor authentication",
+            "2fa",
+            "authenticator code",
+            "authenticator app",
+            "totp",
+        )
+    )
+    if has_explicit_2fa_phrase or ("one-time-code" in field_text and not has_email_context):
         return {"code": "TWO_FACTOR", "reason": "Two-factor authentication step detected"}
 
     if any(phrase in text for phrase in ("verification code", "security code", "enter code", "confirmation code")):
@@ -484,7 +507,11 @@ class BrowserRuntime:
     def __exit__(self, exc_type, exc, tb) -> None:
         if self.is_external_cdp:
             if self.page is not None:
-                should_keep = self.keep_tab or (self.keep_on_human_blocker and self._stopped_for_human)
+                should_keep = (
+                    bool(self.resume_target_id)
+                    or self.keep_tab
+                    or (self.keep_on_human_blocker and self._stopped_for_human)
+                )
                 if not should_keep:
                     try:
                         if not self.page.is_closed():
@@ -516,6 +543,14 @@ class BrowserRuntime:
     def navigate(self, url: str) -> dict[str, Any]:
         url = _validate_http_url(url)
         assert self.page is not None
+        # When resuming an existing target tab already at the target URL,
+        # avoid a hard reload so in-memory form state (such as an OTP verification screen) is preserved.
+        if self.resume_target_id and self.page.url.rstrip("/") == url.rstrip("/"):
+            snapshot = snapshot_page(self.page)
+            if snapshot.get("human_blocker"):
+                self._stopped_for_human = True
+            return snapshot
+
         try:
             self.page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
             self.page.wait_for_timeout(100)

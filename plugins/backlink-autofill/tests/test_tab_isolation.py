@@ -248,6 +248,49 @@ class TabIsolationAndResumeTests(unittest.TestCase):
             self.assertIsNotNone(retained)
             self.assertEqual(retained["status"], "NEEDS_HUMAN")
 
+    def test_resume_preserves_tab_and_skips_reload_on_same_url(self):
+        """Regression: 恢复挂起 Tab 时，若页面已在目标 URL 则跳过 reload 保护现场；退出时不关闭 resumed tab"""
+        # 1. 建立初始 Tab，在表单中填入未提交的中间状态，并保持 Tab
+        with BrowserRuntime(
+            profile_dir=Path(self.user_data_dir),
+            cdp_url=self.cdp_url,
+            keep_tab=True,
+        ) as rt1:
+            rt1.navigate(f"{self.base_url}/form.html")
+            target_id = rt1.target_id
+            assert rt1.page is not None
+            rt1.page.locator("#name").fill("Unsaved Form State")
+            self.assertEqual(rt1.page.locator("#name").input_value(), "Unsaved Form State")
+
+        # 2. 模拟新会话恢复该 Tab，访问同一 URL（末尾无斜杠或有斜杠差异）
+        # 且不设置 keep_tab=True，也没有 human_blocker
+        with BrowserRuntime(
+            profile_dir=Path(self.user_data_dir),
+            cdp_url=self.cdp_url,
+            resume_target_id=target_id,
+        ) as rt2:
+            self.assertEqual(rt2.target_id, target_id)
+            # navigate 到同一 URL
+            rt2.navigate(f"{self.base_url}/form.html")
+            assert rt2.page is not None
+            # 关键断言：未触发 reload，输入框中原有的中间状态得以完整保留
+            self.assertEqual(
+                rt2.page.locator("#name").input_value(),
+                "Unsaved Form State",
+                "Form field was wiped out by an unnecessary page reload on resume!",
+            )
+
+        # 3. 验证 rt2 退出后，resumed tab 仍然未被关闭（Chrome 目标列表中仍存在）
+        with urlopen(f"{self.cdp_url}/json/list") as resp:
+            targets = json.load(resp)
+            target_ids = [t.get("id") for t in targets]
+            self.assertIn(
+                target_id,
+                target_ids,
+                "Resumed tab was improperly closed on BrowserRuntime.__exit__!",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
+

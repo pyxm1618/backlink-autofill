@@ -13,7 +13,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 CLI = PLUGIN_ROOT / "scripts" / "browser_cli.py"
 sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
 
-from browser_runtime import BrowserRuntime, BrowserRuntimeError, detect_human_blocker
+from browser_runtime import BrowserRuntime, BrowserRuntimeError, detect_human_blocker, snapshot_page
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -124,6 +124,38 @@ class OAuthSecurityTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(blocker_email_otp, "Failed to detect email OTP blocker")
                 self.assertEqual(blocker_email_otp["code"], "EMAIL_OTP")
+
+    def test_red_email_otp_priority_over_two_factor_and_long_page(self):
+        """RED: 页面包含长前置文案且具有 Verify Email / verification code，同时 input 带有 one-time-code 时，
+        必须优先判定为 EMAIL_OTP，不得误判为 TWO_FACTOR。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "profile"
+            with BrowserRuntime(
+                profile_dir=profile,
+                browser_channel="chromium",
+                allow_local_fallback=True,
+            ) as rt:
+                assert rt.page is not None
+                # 模拟类似真实页面的长内容（超过 4000 字符的前置文本）以及尾部的邮箱验证码表单
+                long_prefix = "Testimonial and community feedback about modern apps. " * 100  # > 5000 chars
+                html = f"""<!DOCTYPE html>
+                <html>
+                <body>
+                    <div>{long_prefix}</div>
+                    <section>
+                        <h2>Verify Email</h2>
+                        <p>Enter the verification code we sent to your email</p>
+                        <input type="text" autocomplete="one-time-code" placeholder="6-digit code">
+                        <button type="submit">Verify & Continue</button>
+                    </section>
+                </body>
+                </html>
+                """
+                rt.page.set_content(html)
+                snapshot = snapshot_page(rt.page)
+                blocker = snapshot.get("human_blocker")
+                self.assertIsNotNone(blocker, "Human blocker was not detected")
+                self.assertEqual(blocker["code"], "EMAIL_OTP", f"Expected EMAIL_OTP but got {blocker.get('code')}")
 
 
 if __name__ == "__main__":
