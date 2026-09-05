@@ -24,8 +24,13 @@ def ensure_private_data_root(home: Path):
     config_dir = home / ".backlink-autofill"
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    for dirname in ("projects", "browser-profile", "runtime", "recipes"):
+    for dirname in ("projects", "browser-profile", "runtime", "recipes", "credentials"):
         (config_dir / dirname).mkdir(parents=True, exist_ok=True)
+
+    try:
+        (config_dir / "credentials").chmod(0o700)
+    except OSError as exc:
+        raise SystemExit(f"Could not secure credential directory: {config_dir / 'credentials'}: {exc}")
 
     profile_path = config_dir / "submitter-profile.json"
     if profile_path.exists():
@@ -90,8 +95,9 @@ def main():
     print(f"Browser profile: {private_root / 'browser-profile'} (preserved)")
     print(f"Runtime checkpoints: {private_root / 'runtime'} (preserved)")
     print(f"Domain recipes: {private_root / 'recipes'} (preserved)")
+    print(f"Site credentials: {private_root / 'credentials'} (preserved; local-only)")
     print("Personal data is shared once; project assets must live under projects/<project-id>/ and never mix across projects.")
-    print("Passwords are not stored in this data root.")
+    print("Primary/existing account passwords are never imported. Generated backlink-platform passwords may live only under credentials/.")
     print("Restart/reload Codex, then invoke $backlink-autofill and explicitly name the project.")
 
 
