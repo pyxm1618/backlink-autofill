@@ -20,11 +20,34 @@ const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8')
 const registry = readJson(path.join(pluginRoot, 'references', 'project-registry.json'))
 const quickIChing = fs.readFileSync(path.join(pluginRoot, 'references', 'projects', 'quick-iching.md'), 'utf8')
 
+const appBindingPath = path.join(pluginRoot, '.app.json')
+assert(fs.existsSync(appBindingPath), 'Google Drive app binding missing')
+const appBinding = readJson(appBindingPath)
+const sheetContractPath = path.join(pluginRoot, 'references', 'project-sheet-contract.md')
+assert(fs.existsSync(sheetContractPath), 'project Sheet contract missing')
+const sheetContract = fs.readFileSync(sheetContractPath, 'utf8')
+
 assert(manifest.name === 'backlink-autofill', 'plugin manifest name mismatch')
-assert(manifest.version === '0.1.1', 'plugin version must be 0.1.1 for private-data isolation model')
+assert(manifest.version === '0.2.0', 'plugin version must be 0.2.0 for queue execution model')
 assert(manifest.skills === './skills/', 'plugin manifest must expose ./skills/')
-assert(!manifest.mcpServers && !manifest.apps, 'MVP must remain skill-only: no MCP/app dependency')
+assert(manifest.apps === './.app.json', 'plugin manifest must expose ./.app.json')
+assert(!manifest.mcpServers, 'plugin must not define a separate MCP server')
+assert(
+  appBinding.apps?.['google-drive']?.id === 'connector_5f3c8c41a1e54ad7a76272c89e2554fa',
+  'official Google Drive connector binding missing'
+)
+assert(manifest.interface?.capabilities?.includes('Write'), 'plugin must declare Write capability for Sheet state updates')
 assert(marketplace.plugins.some((p) => p.name === manifest.name && p.source?.path === './plugins/backlink-autofill'), 'marketplace entry missing or wrong')
+
+assert(sheetContract.includes('`外链总表`'), 'master Sheet tab name missing')
+assert(sheetContract.includes('`项目外链管理`'), 'project Sheet tab name missing')
+assert(sheetContract.includes('外链ID | 平台域名 | 提交入口 | 发现来源 | 发现时间 | 基础状态 | 基础排除原因 | 实测免费 | 实测需登录 | 实测登录方式 | 实测限制 | 实测链接属性 | 最后验证时间 | 平台备注'), 'master Sheet headers mismatch')
+assert(sheetContract.includes('项目ID | 外链ID | 平台域名 | 状态 | 尝试次数 | 最近操作时间 | 目标URL | 结果链接 | 原因/备注 | 证据摘要'), 'project Sheet headers mismatch')
+assert(sheetContract.includes('候选 / 已排除 / 失效'), 'master Chinese status options missing')
+assert(sheetContract.includes('待提交 / 处理中 / 已提交 / 审核中 / 已排期 / 已上线 / 需人工 / 失败 / 不适用'), 'project Chinese status options missing')
+assert(sheetContract.includes('每次最多读取 100 条'), 'per-run batch contract missing')
+assert(sheetContract.includes('所有项目共用同一个 Spreadsheet'), 'single-workbook topology missing')
+assert(!/docs\.google\.com\/spreadsheets\/d\//i.test(sheetContract), 'private Google Sheet URL must not be committed in schema contract')
 
 assert(skill.startsWith('---\nname: backlink-autofill\n'), 'SKILL.md frontmatter name missing')
 assert(skill.includes('description: Use when'), 'SKILL.md description must start with Use when')
@@ -49,7 +72,6 @@ assert(registry.projects.length >= 1, 'project registry is empty')
 assert(registry.projects.some((p) => p.id === 'quick-iching'), 'Quick I Ching missing from registry')
 assert(quickIChing.includes('Primary keyword: `i ching online`'), 'Quick I Ching primary keyword missing')
 assert(quickIChing.includes('AI-powered'), 'Quick I Ching forbidden-claim boundary missing')
-assert(quickIChing.includes('Preferred vetted queue tab: `严格免费外链`'), 'preferred vetted queue tab missing')
 assert(!/docs\.google\.com\/spreadsheets\/d\//i.test(quickIChing), 'private Google Sheet URL must not be committed')
 
 const pluginFiles = []
