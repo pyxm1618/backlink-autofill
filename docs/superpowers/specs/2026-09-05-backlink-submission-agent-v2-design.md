@@ -1,305 +1,259 @@
 # Backlink Submission Agent v2 — Design
 
 Date: 2026-09-05
-Status: approved for implementation planning
+Status: approved and under implementation
 
 ## Goal
 
-Evolve the current single-target autofill workflow into a project-isolated submission agent that starts from the existing project execution table, processes up to 100 pending targets per invocation, runs ordinary work headlessly, opens a visible browser only when human intervention is required, and writes verified execution state back to the project table.
+Evolve Backlink Autofill into a project-isolated Codex submission agent that reads a shared Google Sheets queue, processes at most 100 pending rows per invocation, runs ordinary website work headlessly, requests human takeover only for genuine blockers, and writes evidence-backed execution state back to the queue.
 
-## Scope for the first implementation
+## Scope boundary
 
-This implementation begins at **reading the existing project execution table**.
+Current implementation starts from an already-populated control Spreadsheet. Discovery and the logic that creates project rows are separate follow-up work.
 
 In scope:
 
-1. resolve the explicitly selected project;
-2. read the existing Google Sheet execution queue through the Google Drive/Sheets connector;
-3. filter rows to the selected project only;
-4. select up to 100 pending rows per invocation;
-5. execute backlink submissions in a persistent local browser profile, headless by default;
-6. automatically complete the final submission when the flow is ordinary and no human-only condition is present;
-7. checkpoint and open a visible browser when human intervention is required;
-8. write the verified execution outcome back to the existing project execution row;
-9. reuse the shared submitter profile and only the selected project's private assets;
-10. cache reusable domain recipes after verified successful runs.
+1. explicit project selection;
+2. structured Google Sheets queue reads/writes;
+3. exact project-row isolation by `项目ID`;
+4. up to 100 `待提交` rows per invocation;
+5. shared submitter profile plus selected-project-only assets;
+6. persistent headless browser execution;
+7. autonomous ordinary final submission when no human-only condition exists;
+8. headed human takeover for genuine blockers;
+9. evidence-backed project status updates;
+10. verified platform-fact enrichment of the master tab after the execution path is proven;
+11. reusable domain recipes.
 
-Explicitly out of scope for this implementation:
+Out of scope for this implementation:
 
-- backlink discovery;
-- changing the discovery skill;
-- creating or populating project rows from discovery results;
-- redesigning the master backlink database;
-- synchronizing newly observed platform facts into the current master/channel table.
+- discovering new backlink opportunities;
+- redesigning the discovery Skill in the same change;
+- scheduled/daily execution;
+- Semrush/DR/DA gating;
+- pre-researching Follow/Nofollow, login method, price, AI-only status, or approval time when execution can determine them more reliably.
 
-Master-fact synchronization is deliberately deferred because the current master/channel table contains legacy researched values such as authority, DoFollow and free-status claims that are not guaranteed to be execution-verified. The master schema and discovery write path will be redesigned together in a separate task so verified observations cannot be mixed with old assumptions.
+## Core principles
 
-## Current Google Sheet compatibility contract
+- **Submit instead of over-screening.** Discovery does minimal junk/dead/malicious filtering; execution is the primary validation mechanism.
+- **Unknown stays blank.** Platform facts are written only when directly observed.
+- **One control plane, strict project isolation.** All projects share one Spreadsheet, but a selected-project run may touch only rows whose `项目ID` exactly matches that project.
+- **Shared identity, isolated project data.** Personal identity is global; project facts/assets are project-specific.
+- **Autonomous by default.** Ordinary safe submissions may include the final Submit action automatically.
+- **Human only on exception.** Security challenges, payment, unusual authorization, or missing facts require human takeover.
+- **Evidence before status.** No success-like state is written from model narration alone.
+- **Run-based, not time-based.** Default batch size is 100 per invocation. There is no scheduler or daily quota.
 
-The current live execution source is the Google Spreadsheet titled:
+## Google Sheets topology
 
-`外链管理总控表`
+One private Google Spreadsheet is the shared control plane for all projects. Its ID is stored locally in `~/.backlink-autofill/control-plane.json` and is never committed.
 
-Current execution tab:
+It has exactly two canonical tabs.
 
-`多项目外链进度与排期表`
+### `外链总表`
 
-The tab currently contains multiple projects in one table. Project isolation in this phase is therefore logical rather than physical: the agent must filter by the exact `项目名称` value for the explicitly selected project and must never mutate another project's row.
+Global platform/opportunity facts. Exact headers:
 
-Current columns A:L are:
+`外链ID | 平台域名 | 提交入口 | 发现来源 | 发现时间 | 基础状态 | 基础排除原因 | 实测免费 | 实测需登录 | 实测登录方式 | 实测限制 | 实测链接属性 | 最后验证时间 | 平台备注`
 
-1. `项目名称`
-2. `外链平台`
-3. `当前状态`
-4. `提交日期`
-5. `预计上线 / 计划 Launch 日期`
-6. `履约/要求配合状态`
-7. `实际落地链接 (Live URL)`
-8. `实际是否 DoFollow`
-9. `Google 收录`
-10. `被推广目标页 (Target URL)`
-11. `锚文本 / 关键词`
-12. `账号 / 备注`
+Discovery-stage finite status:
 
-The first implementation must not require this table to be migrated before use.
+- `候选`
+- `已排除`
+- `失效`
 
-The current workbook has no Quick I Ching rows yet. Therefore code/CI tests use fixtures modeled on the live schema, and real Quick I Ching queue E2E begins only after the discovery/write-side workflow has produced at least one Quick I Ching row.
+Observed fields remain blank until directly verified. Finite observed values include:
 
-## Queue selection
+- `实测免费`: `免费 / 非免费 / 混合`
+- `实测需登录`: `需要 / 不需要`
+- `实测链接属性`: `Follow / Nofollow / UGC / Sponsored / 混合`
 
-The Google Sheet must be accessed through the structured Google Drive/Sheets connector, not by browser-clicking spreadsheet cells.
+`发现来源` is provenance only, such as Google search, competitor backlinks, a directory list, community recommendation, or manual entry. It is not a submission gate.
 
-Selection rules:
+### `项目外链管理`
 
-1. explicit project selection remains mandatory;
-2. search/read only the execution tab;
-3. filter to rows whose `项目名称` exactly matches the configured project queue name;
-4. only rows with `当前状态 = 1-待提交 (To Submit)` are eligible for automatic processing;
-5. preserve sheet row numbers because status writes must target the original row;
-6. take at most 100 eligible rows per invocation by default;
-7. a user may request a smaller batch for that invocation;
-8. there is no daily quota, scheduler, cron, or timed task requirement.
+All projects share this execution table. Exact headers:
 
-If a project has zero eligible rows, stop cleanly and report an empty queue; do not borrow rows from another project.
+`项目ID | 外链ID | 平台域名 | 状态 | 尝试次数 | 最近操作时间 | 目标URL | 结果链接 | 原因/备注 | 证据摘要`
 
-## Current-sheet status compatibility
+Status values:
 
-Existing statuses observed in the live table:
+- `待提交`
+- `处理中`
+- `已提交`
+- `审核中`
+- `已排期`
+- `已上线`
+- `需人工`
+- `失败`
+- `不适用`
 
-- `1-待提交 (To Submit)` → internal `PENDING`
-- `2-排队审核中 (In Review)` → internal `UNDER_REVIEW`
-- `3-已排期待Launch (Scheduled)` → internal `SCHEDULED`
-- `4-已成功上线 (Live)` → internal `LIVE`
+The queue predicate for a selected project is:
 
-The submission agent additionally needs these execution outcomes. Until the discovery/write-side table schema is redesigned, write them as explicit text in the same `当前状态` cell:
+```text
+项目ID == <selected-project-id>
+AND 状态 == 待提交
+```
 
-- `处理中 (In Progress)` → internal `IN_PROGRESS`
-- `已提交待确认 (Submitted)` → internal `SUBMITTED`
-- `需人工 (Needs Human)` → internal `NEEDS_HUMAN`
-- `失败 (Failed)` → internal `FAILED`
-- `不适用 (Not Applicable)` → internal `NOT_APPLICABLE`
+Read at most 100 matching rows per invocation by default.
 
-Do not renumber or reinterpret the existing 1/2/3/4 legacy labels.
+The project table deliberately does not duplicate submit URLs, SEO copy, keywords, project name, separate submitted/live timestamps, or platform-wide facts. Join `外链总表` by `外链ID` for platform data; load marketing/product facts from the selected project profile.
 
-Use `账号 / 备注` for concise compatibility-mode evidence/reason text until a future table migration introduces dedicated execution fields. Do not overwrite useful existing notes; append a timestamped agent entry.
+## Shared private configuration
 
-Use `提交日期` only when a final submission was actually completed. Use `实际落地链接 (Live URL)` only when a public/result URL is actually observed. Do not guess DoFollow or Google indexing values.
+### Control plane
 
-## State machine
-
-Internal states:
-
-- `PENDING`
-- `IN_PROGRESS`
-- `SUBMITTED`
-- `UNDER_REVIEW`
-- `SCHEDULED`
-- `LIVE`
-- `NEEDS_HUMAN`
-- `FAILED`
-- `NOT_APPLICABLE`
-
-Primary transitions:
-
-- `PENDING -> IN_PROGRESS`
-- `IN_PROGRESS -> SUBMITTED | UNDER_REVIEW | SCHEDULED | LIVE | NEEDS_HUMAN | FAILED | NOT_APPLICABLE`
-- `NEEDS_HUMAN -> IN_PROGRESS` after the human step is completed
-- `SUBMITTED | UNDER_REVIEW | SCHEDULED -> LIVE` after later verified evidence
-- `FAILED -> PENDING` only by an explicit retry action/policy
-
-The durable browser/runtime checkpoint is stored locally, not encoded into spreadsheet cells.
-
-If a previous run left a row as `处理中 (In Progress)` but there is no matching active local checkpoint, the agent must not blindly continue or mark success. It should recover conservatively to `1-待提交 (To Submit)` when no mutation evidence exists, or to `失败 (Failed)` when evidence shows an incomplete/failed attempt.
-
-## Private runtime configuration
-
-Reusable personal identity remains global:
-
-`~/.backlink-autofill/submitter-profile.json`
-
-Project assets remain isolated:
-
-`~/.backlink-autofill/projects/<project-id>/`
-
-Add per-project private execution configuration:
-
-`~/.backlink-autofill/projects/<project-id>/execution.json`
-
-Schema:
+`~/.backlink-autofill/control-plane.json`
 
 ```json
 {
   "schema_version": 1,
-  "project_id": "quick-iching",
-  "queue": {
-    "spreadsheet_id": "",
-    "sheet_name": "多项目外链进度与排期表",
-    "project_name": "Quick I Ching"
-  },
+  "spreadsheet_id": "",
+  "master_sheet": "外链总表",
+  "project_sheet": "项目外链管理",
   "default_batch_size": 100
 }
 ```
 
-Private spreadsheet IDs are never committed to the public repository.
+This file is shared by every project and preserved across plugin reinstalls.
 
-Global local runtime paths:
+### Shared submitter profile
+
+`~/.backlink-autofill/submitter-profile.json`
+
+One reusable personal identity/contact profile for every project. Passwords are never stored.
+
+### Per-project data
+
+`~/.backlink-autofill/projects/<project-id>/`
+
+Only the explicitly selected project's data/assets may be read. Never inspect sibling projects as fallback.
+
+### Runtime
 
 ```text
 ~/.backlink-autofill/
 ├── browser-profile/
 ├── runtime/
-│   └── <project-id>/
 └── recipes/
 ```
 
-`runtime/` contains transient per-row checkpoints and evidence metadata. `recipes/` contains domain-level reusable navigation/form mappings. Neither may contain passwords.
+All are preserved across reinstall. They must not intentionally store passwords or security-challenge solutions.
 
-## Google connector boundary
+## Google Sheets execution boundary
 
-Google Sheets queue reads/writes use the official Google Drive connector binding. Browser automation must not be used to manipulate spreadsheet cells.
+Sheets are accessed through the Google Drive/Sheets connector declared by the Codex plugin. Browser automation must never click spreadsheet cells.
 
-The connector workflow must:
+For every selected-project mutation:
 
-1. read spreadsheet metadata and exact visible sheet name;
-2. use bounded row searches/reads;
-3. preserve original row numbers;
-4. re-read the target row before writing when its state could have changed;
-5. write only the selected project's exact row;
-6. verify the written cell values after the update.
+1. resolve the private control Spreadsheet;
+2. read exact tab metadata/headers;
+3. filter rows by exact selected `项目ID`;
+4. preserve original row identity;
+5. re-read the target row immediately before a state-changing write when concurrent change is possible;
+6. write only that row;
+7. re-read and verify the written values.
 
-This separation keeps spreadsheet operations deterministic and reduces browser/token overhead.
+No other project's row may be mutated.
+
+## Execution state machine
+
+Internal state names may remain English in code, but Google Sheet values are the Chinese canonical values above.
+
+Primary transitions:
+
+- `待提交 -> 处理中`
+- `处理中 -> 已提交 | 审核中 | 已排期 | 已上线 | 需人工 | 失败 | 不适用`
+- `需人工 -> 处理中` after human intervention
+- `已提交 | 审核中 | 已排期 -> 已上线` after later verified evidence
+- `失败 -> 待提交` only by explicit retry action/policy
+
+`尝试次数` increments only when a real browser attempt starts. `最近操作时间` changes when execution/status changes. `原因/备注` records concise blocker/failure/incompatibility context. `证据摘要` records browser-observed evidence supporting the state.
 
 ## Browser execution boundary
 
-The browser execution layer is a real local automation component, not narrative instructions.
+The website executor is a real local browser automation component, not narrative prompting.
 
-Use Playwright Python `1.62.0` with a dedicated persistent browser profile under `~/.backlink-autofill/browser-profile/`.
+Target design:
 
-The browser layer must expose deterministic operations for Codex to call, including:
+- persistent profile under `~/.backlink-autofill/browser-profile/`;
+- headless by default;
+- compact interactive DOM/form extraction rather than sending full pages when possible;
+- support navigation, form inspection, text/select/file input, reversible actions, final Submit, and read-back evidence;
+- reuse domain recipes from `~/.backlink-autofill/recipes/`;
+- reopen the same persistent profile visibly for human takeover when needed.
 
-- open/navigate;
-- inspect interactive form state;
-- fill text;
-- select options;
-- click reversible navigation/actions;
-- upload a selected-project file;
-- read back field/page state;
-- click final submit when allowed;
-- capture checkpoint/evidence;
-- reopen the same persistent profile in visible mode for human takeover.
-
-For new/unknown sites, Codex reasons over a compact interactive DOM/form snapshot rather than the full page when possible.
-
-## Autonomous submission policy
+## Autonomous final submission
 
 The old universal `human must click final Submit` rule is removed.
 
-The agent may execute final Submit/Publish/Send-for-review automatically when all are true:
+The agent may automatically execute the final Submit/Publish/Send-for-review action when all are true:
 
-- it is an ordinary backlink/listing/profile submission;
+- ordinary backlink/listing/profile submission;
 - no payment is required;
-- no CAPTCHA, 2FA, passkey, SMS/phone verification or similar security challenge is present;
-- no unusual legal/authorization decision is presented;
-- all submitted facts come from approved project/shared data;
-- the browser can read back a clear resulting state.
+- no CAPTCHA, Cloudflare, 2FA, passkey, SMS/phone verification, or similar challenge is present;
+- no unusual legal/authorization judgment is required;
+- all required facts come from approved project/shared data;
+- resulting browser state can be read back.
 
-If these conditions are not met, do not guess or bypass. Move the row to `NEEDS_HUMAN` or another evidence-supported state.
+Otherwise move to `需人工` or another evidence-supported terminal state.
 
-## Headless default and human takeover
+## Human takeover
 
-Normal execution uses the persistent automation browser profile in headless mode.
-
-Human takeover conditions include:
+Human-only examples:
 
 - CAPTCHA / slider / Cloudflare challenge;
 - 2FA / passkey / SMS / phone verification;
-- manual email verification that cannot be automated safely;
-- payment/paid plan choice;
+- manual email verification that cannot safely be automated;
+- payment/paid-plan choice;
 - unusual terms/authorization requiring judgment;
-- missing required factual information;
+- missing required factual data;
 - browser security/access block.
 
 On takeover:
 
-1. save a local checkpoint with project ID, sheet row number, domain, URL, form/evidence state and reason;
-2. write `需人工 (Needs Human)` plus a concise appended note to the exact project row;
-3. close the headless context cleanly;
-4. reopen the same persistent browser profile visibly;
-5. restore/navigate to the blocked target and restore reversible form state when necessary;
-6. tell the user only what intervention is required;
-7. after the user completes the human step, continue automation from the checkpoint.
+1. save a local checkpoint;
+2. write `需人工`, a concrete `原因/备注`, and evidence to the exact project row;
+3. reopen the same persistent browser profile visibly when technically possible;
+4. restore the target/reversible form state;
+5. tell the user only what action is required;
+6. resume automation after the human step.
 
-The implementation must not attempt to solve or bypass security challenges.
+Never solve or bypass security controls.
 
-## Project/data isolation
+## Recipe cache and token strategy
 
-- Explicit project selection is mandatory.
-- Read queue rows only for the selected project name.
-- Write only the selected project's exact row numbers.
-- Load shared identity only from `submitter-profile.json`.
-- Load project facts/assets only from the selected public profile and `projects/<project-id>/`.
-- Never search sibling project directories for missing assets/facts.
-- Never use another project's sheet row, target URL, anchor, account note or result URL.
+Save verified reusable platform behavior under `~/.backlink-autofill/recipes/<domain>.json` without passwords or project-specific copy.
 
-## Domain recipe cache
+Long-term token savings come primarily from:
 
-After a verified successful run, save reusable platform-level behavior to:
+1. structured Sheets reads/writes instead of spreadsheet UI automation;
+2. compact interactive DOM snapshots;
+3. reusable domain recipes;
+4. deeper model reasoning only for new/changed/ambiguous sites.
 
-`~/.backlink-autofill/recipes/<canonical-domain>.json`
+Headless versus visible browser mode is not itself the primary token lever.
 
-Recipes may store selectors, navigation steps, login entry points, upload mappings and success indicators, but not passwords or project-specific text.
+## Truthfulness contract
 
-On later runs:
+- `处理中` requires a real execution start/checkpoint.
+- `已提交` requires actual final submission plus resulting browser evidence.
+- `审核中` requires explicit platform review/queue evidence.
+- `已排期` requires explicit scheduled/launch evidence.
+- `已上线` requires a verified resulting/public listing state.
+- `失败` requires a concrete failure reason/evidence.
+- `不适用` requires an observed incompatibility with the selected project.
+- `需人工` requires a concrete human-only blocker.
 
-1. try the valid recipe first;
-2. verify selectors/page state before mutating;
-3. fall back to fresh compact DOM inspection if the recipe is stale;
-4. refresh the recipe only after a verified successful flow.
+Narrative intention is never execution evidence.
 
-Recipe reuse is the primary long-term token optimization.
+## Follow-up discovery work
 
-## Truthfulness/evidence contract
+After the execution path is proven, separately update the discovery Skill so it:
 
-No state transition is based only on model narration.
-
-- `IN_PROGRESS` requires an execution start/checkpoint.
-- `SUBMITTED` requires an actual final submission action plus resulting page evidence.
-- `UNDER_REVIEW` requires explicit platform evidence of review/queue status.
-- `SCHEDULED` requires explicit platform evidence of a scheduled/launch state.
-- `LIVE` requires an actually reachable/result listing state.
-- `FAILED` requires recorded failure evidence/reason.
-- `NOT_APPLICABLE` requires an observed incompatibility with the selected project.
-
-Spreadsheet writes must be verified by re-read.
-
-## Follow-up work deliberately separated
-
-After this execution path is proven, handle these in a separate design/implementation cycle:
-
-1. simplify backlink discovery to find + normalize + deduplicate + obvious-junk rejection;
-2. redesign the master backlink schema so legacy researched claims and execution-verified facts are distinct;
-3. change discovery/project-table write logic accordingly;
-4. add verified platform-fact propagation from execution into the redesigned master table;
-5. optionally migrate from the current multi-project execution tab to physically separate project spreadsheets if still valuable.
-
-This separation prevents the execution build from being blocked by a larger database/discovery migration.
+1. finds candidates;
+2. normalizes and deduplicates before writing;
+3. rejects only obvious junk/dead/malicious candidates cheaply;
+4. writes minimal rows to `外链总表` and corresponding project queue rows;
+5. does not use Semrush/authority/Follow status as a submission gate;
+6. lets real submission progressively enrich the verified platform facts in `外链总表`.
