@@ -77,21 +77,22 @@ Do not state or imply:
 - `https://quickiching.com/guides/primary-relating-hexagrams`
 - `https://quickiching.com/guides/how-to-ask-the-i-ching`
 
-## Contact / assets
+## Contact / private assets
 
 - Project/support email: `support@quickiching.com` (verified on the canonical site). Use this for fields asking for project/support contact. Do not substitute it for the user's account/login email unless the private submitter profile explicitly chooses it.
-- Canonical logo source: `https://www.quickiching.com/quick-i-ching-logo-mark.png` (official-site asset reference). For file-upload fields, download this official asset to a temporary local file first, then upload it if the browser tool supports file upload.
+- Canonical public logo source: `https://www.quickiching.com/quick-i-ching-logo-mark.png`.
+- Preferred file-upload assets: resolve the private manifest at `~/.backlink-autofill/projects/quick-iching/assets.json` and use only files inside that project directory.
+- The private project pack may contain logo variants, hero image, product screenshots, content visuals, and source material. Use semantic roles from `assets.json`; never guess a sibling-project asset.
 - Founder/submitter personal name: load from private `~/.backlink-autofill/submitter-profile.json`.
 - Account/login email: load from the private submitter profile; do not infer it from the support email.
 - Country / role / phone: load from the private submitter profile when configured.
-- Social links: not configured.
-- Screenshots: not configured.
+- Social links: not configured unless present in verified project-specific private/canonical sources.
 
 If a project-specific required value remains unconfigured, flag it instead of inventing one. Reusable personal identity/contact data belongs in the private submitter profile rather than this public project file.
 
-## Backlink queue
+## Execution association
 
-- Preferred vetted queue tab: `严格免费外链`
-- Expected columns include: `域名`, `获取方式`, `提交/发布入口`, `条件/备注`.
-- Do not commit or expose a private Google Sheet ID/URL in this public repository.
-- For MVP use the Sheet already opened by the user in their signed-in Chrome profile, or use a target URL/current submission page explicitly selected by the user.
+- The canonical Sheet project key is exactly `quick-iching`.
+- Queue/control-plane location comes only from private `~/.backlink-autofill/control-plane.json` and the shared Sheet contract; no Google Sheet ID or legacy queue-tab name belongs in this public project profile.
+- If a project queue row leaves `目标URL` blank, the canonical default is `https://quickiching.com/`.
+- A platform explicitly restricted to AI products is incompatible with this project under the current reviewed facts and should be recorded as `不适用`; never relabel Quick I Ching as AI-powered to qualify.
