@@ -207,7 +207,17 @@ class BrowserRuntimeTests(unittest.TestCase):
                 expect_ok=False,
             )
             self.assertNotEqual(proc.returncode, 0)
-            error = json.loads(proc.stderr)
+            self.assertTrue(
+                proc.stderr.strip(),
+                f"credential rejection produced no stderr; returncode={proc.returncode}, stdout={proc.stdout!r}",
+            )
+            try:
+                error = json.loads(proc.stderr)
+            except json.JSONDecodeError as exc:
+                self.fail(
+                    f"credential rejection stderr was not JSON; returncode={proc.returncode}, "
+                    f"stdout={proc.stdout!r}, stderr={proc.stderr!r}, parse_error={exc}"
+                )
             self.assertEqual(error["error_code"], "CREDENTIAL_TARGET_NOT_PASSWORD")
             self.assertEqual(list(credential_root.glob("*.json")), [])
 
