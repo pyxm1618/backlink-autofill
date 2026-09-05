@@ -1,0 +1,35 @@
+{
+  "name": "backlink-autofill",
+  "version": "0.2.1",
+  "description": "Project-isolated backlink submission workflow using the signed-in Codex/ChatGPT model, Google Sheets queue state, a real Playwright browser runtime, isolated per-site credentials, one shared submitter profile, and selected-project-only assets without a separate LLM API.",
+  "author": {
+    "name": "pyxm1618"
+  },
+  "homepage": "https://github.com/pyxm1618/backlink-autofill",
+  "repository": "https://github.com/pyxm1618/backlink-autofill",
+  "license": "MIT",
+  "keywords": [
+    "seo",
+    "backlinks",
+    "directory-submission",
+    "browser-automation"
+  ],
+  "skills": "./skills/",
+  "apps": "./.app.json",
+  "interface": {
+    "displayName": "Backlink Autofill",
+    "shortDescription": "Run isolated backlink submissions from a Google Sheets queue",
+    "longDescription": "Select one project explicitly, read only that project's rows from the shared backlink control spreadsheet, combine reviewed project data and private assets with one shared submitter profile, and execute backlink form work with evidence-backed status updates. New backlink-platform accounts may use generated per-site credentials stored only in the local private credential store.",
+    "developerName": "pyxm1618",
+    "category": "Marketing",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/pyxm1618/backlink-autofill",
+    "defaultPrompt": [
+      "Use $backlink-autofill for the selected project and work from its pending rows in the backlink control spreadsheet"
+    ],
+    "screenshots": []
+  }
+}
