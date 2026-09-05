@@ -88,7 +88,7 @@ def _is_sensitive_field(locator: Locator) -> bool:
 
 def _interactive_snapshot(page: Page) -> list[dict[str, Any]]:
     return page.evaluate(
-        """
+        r"""
         () => {
           const visible = (el) => {
             const style = window.getComputedStyle(el);
