@@ -184,8 +184,8 @@ def _interactive_snapshot(page: Page) -> list[dict[str, Any]]:
 def detect_human_blocker(page: Page, body_excerpt: str | None = None) -> dict[str, str] | None:
     """Detect only high-signal conditions that should be handed to a human.
 
-    This is intentionally conservative. Ambiguous policy/terms decisions remain a
-    model-level decision; this function only recognizes strong browser evidence.
+    Provider names in ordinary footer/legal text are not blockers. Detection
+    requires challenge-specific frame/field evidence or explicit challenge copy.
     """
 
     try:
@@ -221,13 +221,31 @@ def detect_human_blocker(page: Page, body_excerpt: str | None = None) -> dict[st
     frame_text = _normalize_text(" ".join(signals.get("frames") or []))
     field_text = _normalize_text(" ".join(signals.get("fields") or []))
 
-    if "cloudflare" in text or "challenges.cloudflare.com" in frame_text or "cf-chl" in frame_text:
+    cloudflare_frame = "challenges.cloudflare.com" in frame_text or "cf-chl" in frame_text
+    cloudflare_copy = any(
+        phrase in text
+        for phrase in (
+            "checking your browser",
+            "performing security verification",
+            "verify you are human",
+        )
+    )
+    if cloudflare_frame or ("cloudflare" in text and cloudflare_copy):
         return {"code": "CLOUDFLARE", "reason": "Cloudflare human/security challenge detected"}
 
     captcha_tokens = ("recaptcha", "hcaptcha", "turnstile", "captcha")
-    if any(token in frame_text for token in captcha_tokens) or any(token in text for token in captcha_tokens):
+    if any(token in frame_text for token in captcha_tokens):
         return {"code": "CAPTCHA", "reason": "Human verification/CAPTCHA detected"}
-    if any(phrase in text for phrase in ("verify you are human", "prove you are human", "human verification")):
+    if any(
+        phrase in text
+        for phrase in (
+            "verify you are human",
+            "prove you are human",
+            "human verification",
+            "complete the captcha",
+            "solve the captcha",
+        )
+    ):
         return {"code": "CAPTCHA", "reason": "Human verification challenge detected"}
 
     if "passkey" in text or "webauthn" in field_text:
