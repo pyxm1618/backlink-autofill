@@ -7,40 +7,38 @@ description: Use when running backlink submissions for an explicitly selected pr
 
 ## Core principle
 
-Backlink Autofill is a **Codex plugin/Skill**, not a separate Google plugin and not a browser-side AI client. Google Drive/Sheets is a connected capability used as the structured queue/control plane; the website itself is controlled by the plugin's real Playwright browser runtime.
+Backlink Autofill is a **Codex plugin/Skill**, not a Google plugin and not a browser-side AI client. Google Drive/Sheets is the structured queue/control plane; the website itself is controlled by the plugin's Playwright browser runtime.
 
-The AI is the current Codex/ChatGPT model. **Do not call or require a separate LLM API**, API key, model endpoint, OpenRouter account, or second model service.
+The AI is the current signed-in Codex/ChatGPT model. **Do not call or require a separate LLM API**, API key, model endpoint, OpenRouter account, or second model service.
 
-The normal job is:
+Normal flow:
 
 ```text
 explicit project
 → read only that project's 待提交 rows
 → process at most 100 rows per invocation
-→ use headless browser by default
+→ headless browser by default
 → submit ordinary safe/free flows automatically
 → write evidence-backed state to the exact Sheet row
 → continue
 ```
 
-Do not narrate every successful row. Interrupt the user only when a genuine human-only blocker occurs or when required factual data is missing.
+Do not narrate every successful row. Interrupt the user only for a genuine human-only blocker or genuinely missing factual data.
 
 ## Hard gates
 
-1. **Project selection is explicit.** Read `../../references/project-registry.json`. The user must name/select a project. Never infer the project from the current website, the previous run, or the fact that only one project exists.
-2. **Project isolation is strict.** A run may read project-specific facts/assets only for the selected project and may mutate only Sheet rows whose `项目ID` exactly equals that selected project ID.
-3. **Browser action evidence is mandatory.** Never claim navigation, filling, clicking, uploading, submitting, login, or success from intention or prose. A browser action must actually run and its returned state/read-back must support the claim.
-4. **Google Sheets is structured control data.** Never use browser automation to read or edit Google Sheets. Use the connected Google Drive/Sheets capability for metadata, bounded row reads/searches, and writes.
+1. **Project selection is explicit.** Read `../../references/project-registry.json`. The user must name/select a project. Never infer it from the website, previous run, or the fact that only one project exists.
+2. **Project isolation is strict.** Read project-specific facts/assets only for the selected project. Mutate only Sheet rows whose `项目ID` exactly equals that selected project ID.
+3. **Browser action evidence is mandatory.** Never claim navigation, filling, clicking, uploading, submitting, login, or success from intention. A browser action must actually run and its returned state/read-back must support the claim.
+4. **Google Sheets is structured control data.** Never use browser automation to read or edit Google Sheets. Use the connected Google Drive/Sheets capability for bounded reads/searches and exact writes.
 5. **Security challenges are human-only.** Never solve or bypass CAPTCHA, Cloudflare/Turnstile, 2FA, passkeys, SMS/phone verification, or similar controls.
-6. **Passwords are different.** Never put passwords, passcodes, tokens, secrets, or API keys in chat, project data, checkpoints, recipes, or browser action JSON. Password fields are handled by the human/browser credential manager in visible mode.
-7. **No cross-project assets.** Never search sibling project directories for a logo, screenshot, contact, social URL, copy, keyword, or any other project-specific value.
+6. **Passwords are different.** Existing/primary account passwords, passcodes, tokens, secrets, API keys, session credentials, and security-challenge solutions must never be placed in chat, Google Sheets, project data, checkpoints, recipes, or browser action JSON. A confirmed **new backlink-platform account** may use an independently generated per-site password from the local credential store via `credential_fill`; the password value itself remains local and model-invisible.
+7. **No cross-project assets.** **Never search sibling project directories** for a logo, screenshot, contact, social URL, copy, keyword, or other project-specific value.
 8. **Evidence before status.** Never write success-like states (`已提交`, `审核中`, `已排期`, `已上线`) without browser-observed evidence.
 
 ## Private runtime model
 
-Read `~/.backlink-autofill/control-plane.json` before any queue work.
-
-Expected structure:
+Read `~/.backlink-autofill/control-plane.json` before queue work:
 
 ```json
 {
@@ -52,7 +50,7 @@ Expected structure:
 }
 ```
 
-If this file is missing or invalid, stop before browser work. Do not guess a spreadsheet by title.
+If missing/invalid, stop before browser work. Do not guess a Spreadsheet by title.
 
 Shared reusable identity:
 
@@ -72,318 +70,243 @@ Browser/runtime storage:
 ~/.backlink-autofill/browser-profile/
 ~/.backlink-autofill/runtime/
 ~/.backlink-autofill/recipes/
+~/.backlink-autofill/credentials/
 ```
 
-The browser profile is shared across projects only for browser account/session continuity. Project content/assets remain isolated.
+`credentials/` is a shared local store keyed by platform domain for passwords created specifically for backlink-platform accounts. It is not project content. Never copy credential values into another persistence surface.
 
 ## Canonical Sheet contract
 
 Read `../../references/project-sheet-contract.md` and use its exact Chinese headers/statuses.
 
-The queue predicate is exactly:
+Queue predicate:
 
 ```text
 项目ID == selected project ID
 AND 状态 == 待提交
 ```
 
-Process **at most 100 rows per invocation** by default. If the user asks for fewer, obey the smaller limit. There is no daily quota, scheduler, cron, or implicit time-based run.
+Process **at most 100 rows per invocation** by default. If the user requests fewer, obey the smaller limit. There is no daily quota, scheduler, cron, or implicit time-based run.
 
 ### Queue discovery
 
 1. Resolve the exact Spreadsheet ID from `control-plane.json`.
-2. Use the connected Google Drive/Sheets capability to read Spreadsheet metadata.
-3. Verify both tabs exist with the exact names `外链总表` and `项目外链管理`.
-4. Read/verify their header rows before mutating anything.
-5. Search/read `项目外链管理` in bounded ranges for the exact selected `项目ID`.
-6. From those rows, retain only exact `状态 == 待提交` rows, preserving their original Sheet row numbers.
-7. Select at most the configured batch limit (default 100) in Sheet order unless the user explicitly requests another ordering.
+2. Verify tabs `外链总表` and `项目外链管理` and their exact headers.
+3. Search/read `项目外链管理` for the exact selected `项目ID` in bounded ranges.
+4. Retain only exact `状态 == 待提交` rows, preserving original Sheet row numbers.
+5. Select at most the configured batch limit in Sheet order unless explicitly told otherwise.
 
-Do not select another project's rows even if its domain, backlink ID, target URL, or notes look relevant.
+Never select another project's rows even if its domain or target looks related.
 
-## Interrupted-row recovery
+## Interrupted and human-row recovery
 
-Before taking new `待提交` rows, check selected-project rows already marked `处理中`.
+Before taking new `待提交` rows, inspect selected-project `处理中` rows and active checkpoints/handoffs.
 
-- If an active human handoff/checkpoint exists, resume that one first.
-- If a previous run stopped with uncertain submission outcome, do **not** silently reset to `待提交` and resubmit. Move it to `需人工` with `原因/备注 = 上次执行中断，提交结果不确定，避免重复提交` and preserve evidence/checkpoint.
-- Only retry a failed/ambiguous submission when evidence proves no submission occurred or the user explicitly directs a retry.
-
-This prevents duplicate listings caused by process crashes.
+- Active checkpoint/handoff with known reversible state → resume it first.
+- Previous run stopped with uncertain final-submit outcome → do not reset/retry; set/keep `需人工` with `上次执行中断，提交结果不确定，避免重复提交`.
+- Retry only when evidence proves no submission occurred or the user explicitly directs a retry.
+- A `需人工` row may be resumed when the user explicitly asks and evidence proves the final Submit **did not occur**. Do not increment `尝试次数` merely for continuing the same still-open attempt.
+- If the only previous blocker was new-account password creation and no final Submit occurred, the new `credential_fill` policy may resume that same attempt after the old visible handoff is cleanly closed/unlocked.
 
 ## Per-row execution loop
 
-For each selected queue row:
-
 ### 1. Re-read and lock the exact row
 
-Immediately before starting the target:
+Immediately before new execution:
 
 1. re-read the exact original row;
-2. confirm `项目ID` still equals the selected project ID;
-3. confirm `状态` is still `待提交`;
-4. if either changed, skip it without mutation;
-5. update only that row to:
-   - `状态 = 处理中`
-   - increment `尝试次数` by 1
-   - `最近操作时间 = current timestamp`
-6. **Re-read the exact row after every Sheet mutation** and verify the intended values before continuing.
+2. confirm `项目ID` still equals selected project;
+3. confirm status is still eligible for this action (`待提交`, or an explicitly resumed known-safe `需人工` row);
+4. for a new `待提交` attempt set `状态 = 处理中`, increment `尝试次数`, and set `最近操作时间`;
+5. for continuation of the same proven-unsubmitted attempt, set `状态 = 处理中` without incrementing the attempt count;
+6. **Re-read the exact row after every Sheet mutation** and verify intended values.
 
-Create/update a local project+row checkpoint before website mutation so an interrupted run is recoverable.
+Create/update a project+row checkpoint before website mutation. Checkpoints contain only safe state, never credentials.
 
-### 2. Resolve the platform row
+### 2. Resolve platform row
 
-Use the queue row's `外链ID` to find exactly one matching row in `外链总表`.
+Join by `外链ID` to exactly one row in `外链总表`; require a valid `提交入口`.
 
-Require a usable `提交入口`.
+- no exact master row → `失败`, `外链ID在外链总表中不存在`;
+- duplicate exact master rows → `失败`, `外链ID在外链总表中不唯一`;
+- invalid/missing submit URL → `失败`, `缺少有效提交入口`.
 
-- no matching master row → project row `失败`, reason `外链ID在外链总表中不存在`;
-- multiple exact matches → project row `失败`, reason `外链ID在外链总表中不唯一`;
-- missing/invalid submit URL → project row `失败`, reason `缺少有效提交入口`.
-
-These are data-integrity failures; do not invent a URL by searching the web as a silent substitute.
+Do not silently web-search a replacement URL for a data-integrity failure.
 
 ### 3. Load only approved project data
 
 Load:
 
 1. selected reviewed project profile from `../../references/projects/...`;
-2. `~/.backlink-autofill/submitter-profile.json`;
-3. only `~/.backlink-autofill/projects/<project-id>/` and its `assets.json` if present.
+2. shared `submitter-profile.json`;
+3. only `~/.backlink-autofill/projects/<project-id>/` and its assets.
 
 **Never search sibling project directories** as fallback.
 
-If `目标URL` is blank, use the selected project's canonical URL only when the reviewed profile defines it unambiguously.
+If `目标URL` is blank, use the selected project's canonical URL only when unambiguous. Never invent features, AI claims, pricing, metrics, awards, integrations, company claims, reviews, or partnerships.
 
-Never invent features, AI capabilities, pricing, metrics, awards, integrations, founder facts, testimonials, partnerships, user counts, or legal-company claims.
+### 4. Recipe first, compact inspection second
 
-### 4. Use recipe first, then compact browser inspection
+Use `~/.backlink-autofill/recipes/<domain>.json` when a verified stable recipe exists. Recipes contain selectors/navigation/success indicators, never credentials or project copy.
 
-A valid domain recipe in:
-
-```text
-~/.backlink-autofill/recipes/<domain>.json
-```
-
-may supply stable navigation/form selectors. It contains no credentials or project copy.
-
-If no valid recipe exists or selectors no longer match, inspect the target with the real browser runtime and reason from its compact interactive snapshot.
-
-Personal install runtime command path:
-
-```text
-~/plugins/backlink-autofill/scripts/browser_cli.py
-```
-
-Development checkout may use the repository copy of the same script.
-
-**Headless is default.** Use the persistent profile:
+If missing/stale, inspect the real page with the browser runtime's compact interactive snapshot. **Headless is default** and the persistent profile is:
 
 ```text
 ~/.backlink-autofill/browser-profile/
 ```
 
-Do not take screenshots or feed full-page content to the model when the compact DOM/form snapshot is sufficient.
+Do not use screenshots/full-page dumps when compact DOM/form state is sufficient.
 
-### 5. Discover constraints by actually entering the flow
+### 5. Discover platform facts by execution
 
-Do not pre-research DR/DA, Follow status, login requirements, or free/paid status before execution unless the current page itself exposes them.
+Do not pre-research DR/DA, Follow status, login method, price, AI-only status, or review time when the live flow can reveal them.
 
-During real execution, collect only directly observed platform facts, for example:
+Record only directly observed facts. Unknown stays blank.
 
-- free submission is available;
-- paid-only submission;
-- login is required/not required;
-- Google/GitHub/email login is offered;
-- AI-only/SaaS-only constraint;
-- reciprocal link/badge required;
+Examples:
+- free / paid-only / mixed submission;
+- login required or not;
+- observed login method;
+- AI-only/SaaS-only constraints;
+- reciprocal/badge requirement;
 - review queue/scheduling behavior.
 
-Unknown stays blank.
+Fast handling:
+- incompatible eligibility → `不适用`, continue;
+- no free path under free-run policy → `不适用`, record `实测免费 = 非免费`;
+- mandatory project-site modification/reciprocal badge → `需人工`;
+- clearly dead submission page → `失败`; master may become `失效` with evidence.
 
-#### Fast incompatibility handling
+### 6. Login and credential behavior
 
-Do not interrupt the user for obvious non-security incompatibility:
-
-- selected project violates an observed platform eligibility rule → `不适用` and continue;
-- paid-only submission when no free path exists → `不适用`, record `实测免费 = 非免费`, and continue;
-- reciprocal-link/badge is mandatory and would require modifying the project site → normally `需人工` because it requires an external project change;
-- dead/removed submission page with clear evidence → project `失败`; master may be updated to `失效` with verification timestamp.
-
-Example: Quick I Ching encountering an explicitly AI-only directory is `不适用`, not a reason to invent an AI feature.
-
-### 6. Login behavior
-
-Reuse the persistent automation profile.
+Reuse the persistent browser profile.
 
 - already logged in → continue;
-- ordinary OAuth button with an already-authorized session may be clicked automatically when no challenge appears;
-- password/passcode fields are never filled by action JSON;
-- CAPTCHA/Cloudflare/2FA/passkey/SMS/phone/security challenge → human handoff;
-- do not create/store a plaintext password.
+- ordinary OAuth with already-authorized session and no challenge → may continue automatically;
+- confirmed new backlink-platform account with Password / Confirm Password fields → use `credential_fill` with `credential = site_password`, `mode = create_or_reuse`, and the approved registration account;
+- existing backlink-platform login → use `credential_fill` with `mode = existing_only` **only if** a credential already exists for that current domain/account;
+- existing login with no stored site credential → human handoff; do not invent a new password for a login form;
+- Google/email/GitHub/other primary account password → human/browser credential manager; never import or read it;
+- CAPTCHA/Cloudflare/2FA/passkey/SMS/phone verification/payment → human handoff.
+
+`credential_fill` must resolve the credential by the **current page domain**, not an arbitrary domain supplied by the model. It may return only non-secret evidence such as `{credential: site_password, verified: true}`.
 
 ### 7. Build and execute an explicit action plan
 
-Map the form to approved project/shared data.
+Allowed ordinary actions:
 
-Allowed ordinary actions include:
-
-- text/textarea fill;
-- select/dropdown choice;
-- checkbox where the meaning is understood and ordinary;
+- `fill` for non-sensitive text/textarea fields;
+- `credential_fill` for the local per-site password policy above;
+- select/dropdown;
+- understood ordinary checkbox;
 - selected-project file upload;
-- ordinary navigation/clicks;
+- ordinary navigation/click;
 - final submit when allowed below.
 
-For file upload, files must resolve inside the selected project's private asset root. If a target requires resizing, compression, format conversion, padding, or cropping, create a derived copy inside that same project directory and preserve originals.
+Normal `fill` must continue refusing sensitive/password fields. Never put the password value in action JSON.
 
-For comments/articles, read enough of the target content to write a genuinely relevant comment; do not manufacture generic spam or force exact-match anchors.
+Uploads must stay inside the selected project's private asset root. Derived image variants stay in that same project directory.
 
-**Read the form back after filling.** The browser runtime must verify values/files/actions; never report a field as filled based only on planned values.
+**Read the form back after filling.** Verify ordinary field values, uploaded filename, and credential-fill success without exposing secret values.
 
 ### 8. Final submit policy
 
-**Final submit may be automatic** for an ordinary backlink/listing/profile submission when all are true:
+**Final submit may be automatic** when all are true:
 
-- a free/non-payment path is being used;
-- there is no security/human blocker;
-- all required facts come from approved project/shared data;
-- no unusual legal authorization or external site modification is required;
-- the final action's result can be read back.
+- free/non-payment path;
+- no security/human blocker;
+- all required facts are approved;
+- no unusual legal authorization or external project-site modification;
+- final action/result can be read back.
 
-Do not stop merely because the next button is named Submit, Publish, Launch, Post, Create Listing, or Send for Review.
-
-Do not make payments or accept unusual commitments autonomously.
+Do not stop merely because the button is named Submit/Publish/Launch/Post/Create Listing/Send for Review. Do not autonomously make payments or accept unusual commitments.
 
 ### 9. Human handoff
 
-The browser runtime returns `stopped_for_human` when it detects a high-signal blocker such as CAPTCHA/Cloudflare/2FA/passkey/security verification/payment-entry.
+Use human handoff for security challenge, missing primary credential, payment, unusual authorization, mandatory external site change, or other genuinely human-only step.
 
-When `stopped_for_human` is true, or when reasoning identifies another genuinely human-only step:
+When handing off:
 
-1. save the checkpoint with only safe reversible state; never store credentials;
-2. write the exact project row:
-   - `状态 = 需人工`
-   - `最近操作时间 = current timestamp`
-   - concrete `原因/备注`
-   - concise `证据摘要`;
-3. verify the Sheet write by re-reading that row;
-4. close the headless instance so the persistent profile is unlocked;
-5. launch the detached visible-browser flow using `handoff-start` on the **same** persistent profile;
-6. replay only safe reversible actions (`fill`, `select`, `check`, `upload`); never replay an arbitrary click or final submit;
-7. stop the batch and tell the user only what they need to do in the visible browser.
+1. save credential-free checkpoint;
+2. write exact project row `需人工` + concrete `原因/备注` + concise `证据摘要` and verify by re-read;
+3. close headless browser to unlock the persistent profile;
+4. launch `handoff-start` on the same profile;
+5. replay only safe reversible actions. `credential_fill` is safe to replay because the secret remains in the local credential store and does not enter replay JSON; never replay arbitrary click/final submit;
+6. pause the batch and tell the user only the required action.
 
-Do not continue processing other rows while the same browser profile is held by an active human handoff.
+Do not continue other rows while the profile is held by an active handoff.
 
-When the user says the human step is complete:
+After the user finishes:
 
 1. read `handoff-status`;
 2. request `handoff-finish`;
-3. wait for the handoff state to become `FINISHED` and read its final page snapshot;
-4. if a human blocker still exists, keep `需人工`;
-5. otherwise classify the result, update the exact row, verify the write, and resume normal headless processing if more rows remain.
+3. wait for `FINISHED`, inspect final page state;
+4. if blocker remains, keep `需人工`;
+5. otherwise classify result, write/verify exact row, then resume headless work.
 
 ### 10. Classify outcome from evidence
 
-Use the strongest browser evidence available:
+Use strongest real evidence:
 
-- `已上线` — public/listing result is verified live;
-- `已排期` — platform explicitly confirms a scheduled launch/publication date/state;
-- `审核中` — platform explicitly says review/moderation/approval is pending;
-- `已提交` — final submission is confirmed/received but no stronger review/live state is proven;
-- `不适用` — observed eligibility/payment/product constraint makes this project ineligible under the run policy;
-- `失败` — concrete non-human execution failure with no evidence of successful submission;
-- `需人工` — a human-only blocker or ambiguous post-submit outcome that must not be auto-retried.
+- `已上线` — listing/result verified live;
+- `已排期` — explicit scheduled publication/launch;
+- `审核中` — explicit review/moderation pending;
+- `已提交` — final submission confirmed/received with no stronger state;
+- `不适用` — observed eligibility/payment/product constraint;
+- `失败` — concrete execution failure with no evidence of successful submission;
+- `需人工` — human-only blocker or ambiguous post-submit outcome.
 
-If the final Submit was clicked but the resulting state is ambiguous, prefer `需人工` with reason `已执行提交但结果不明确，避免重复提交` rather than retrying.
+If final Submit was clicked but outcome is ambiguous, use `需人工` with `已执行提交但结果不明确，避免重复提交`; never auto-retry.
 
-`证据摘要` should be short and factual, for example:
+`证据摘要` must be short and factual.
 
-```text
-Submission received; pending review
-Listing page live at result URL
-AI tools only; project is non-AI
-Cloudflare human verification detected
-```
+### 11. Update exact project row
 
-### 11. Update the exact project row
+Normally update only:
+- `状态`;
+- `最近操作时间`;
+- `结果链接` when observed;
+- `原因/备注` when needed;
+- `证据摘要`.
 
-Write only fields supported by the result, normally:
+Then **Re-read the exact row after every Sheet mutation** and verify it. Never mutate another project's row.
 
-- `状态`
-- `最近操作时间`
-- `结果链接` when observed
-- `原因/备注` when useful/required
-- `证据摘要`
+### 12. Enrich master facts from direct observation only
 
-Then **Re-read the exact row after every Sheet mutation** and verify it.
+Update matching `外链总表` row only with facts directly observed:
+- `实测免费`;
+- `实测需登录`;
+- `实测登录方式`;
+- `实测限制`;
+- `实测链接属性` only after real live-link/HTML evidence;
+- `最后验证时间`;
+- concise platform notes.
 
-Never mutate another project's row.
+Unknowns remain blank. Project-specific status/result URL never propagates to other projects.
 
-### 12. Enrich master facts only from direct observation
+### 13. Save/refresh domain recipe
 
-After a real execution/verification, update the matching `外链总表` row only with facts actually observed in this run:
-
-- `实测免费`
-- `实测需登录`
-- `实测登录方式`
-- `实测限制`
-- `实测链接属性` only after real live-link/HTML evidence
-- `最后验证时间`
-- concise `平台备注` when needed
-
-Do not fill unknowns.
-
-If new direct evidence conflicts with an old verified value, do not silently pretend both are true. Use `混合` where that is semantically correct or update the newest verified fact and note the conflict/context in `平台备注`.
-
-Project-specific submission status/result URL never propagates to another project's queue rows.
-
-### 13. Save/refresh a domain recipe
-
-After a verified stable flow, save reusable selectors/navigation/success indicators to the domain recipe. Never store:
-
-- password/token/secret/session credentials;
-- project-specific title/description/keywords;
-- selected-project asset paths when they are not generic selector metadata.
-
-If a recipe stops matching, fall back to fresh compact inspection and refresh it only after successful verification.
+After a verified stable flow, save selectors/navigation/success indicators. Never store password/token/secret/session credential, generated password, or project-specific copy inside a recipe.
 
 ### 14. Finish or continue
 
-Delete/close completed row checkpoints once the row is in a non-ambiguous terminal state. Keep the checkpoint for `需人工`/ambiguous interrupted work.
+Delete completed-row checkpoints once the row reaches a non-ambiguous terminal state. Keep checkpoint for `需人工`/ambiguous interrupted work.
 
-Continue until:
-
-- selected batch rows are exhausted;
-- the configured per-invocation maximum is reached;
-- an active human handoff pauses the run;
-- a control-plane/browser-level failure makes further execution unsafe.
+Continue until batch exhausted, invocation limit reached, human handoff pauses the run, or a control-plane/browser-level failure makes continuation unsafe.
 
 ## Truthfulness contract
 
-Use these meanings consistently:
+- `Planned`: no website mutation happened.
+- `Attempted`: an actual browser action was issued but intended result not verified.
+- `Filled`: actual field/file mutation was read back and verified; for credentials, verification must not expose the secret.
+- `Submitted`: real final action occurred and browser produced evidence of receipt/result.
 
-- `Planned`: no website mutation has happened.
-- `Attempted`: an actual browser action was issued but its intended result was not verified.
-- `Filled`: the actual field/file mutation was read back and verified.
-- `Submitted`: the real final action occurred and the browser produced evidence of receipt/result.
-
-Never upgrade one level based on intention, prior conversation, inferred browser state, or model narration.
+Never upgrade state based on narration, prior conversation, or inference.
 
 ## User-facing behavior
 
-For ordinary fully automatic rows, do not open a visible browser and do not ask for per-row confirmation.
+Ordinary automatic rows: no visible browser, no per-row confirmation.
 
-At the end of an uninterrupted run, report compact totals such as:
+At uninterrupted batch end, report compact totals.
 
-```text
-处理 37：已上线 9，审核中 14，已提交 7，不适用 5，失败 2。
-```
-
-For `需人工`, immediately open the visible handoff browser and report only:
-
-- platform/domain;
-- what human action is required;
-- that the batch is paused to avoid sharing/locking the same browser profile.
-
-Do not dump all internal reasoning or every successfully filled field unless the user asks.
+For `需人工`, open visible handoff and report only platform/domain, required human action, and that batch is paused. Never print generated/stored passwords unless the user explicitly asks to retrieve one through an appropriate secure local workflow.
