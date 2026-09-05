@@ -33,7 +33,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", required=True)
     parser.add_argument("--headed", action="store_true", help="show the browser window; headless is default")
     parser.add_argument("--cdp-url", help="CDP endpoint URL (e.g. http://127.0.0.1:9222)")
-    parser.add_argument("--allow-local-fallback", action="store_true", help="allow fallback to local Chromium in CI/test")
+    parser.add_argument("--allow-local-fallback", action="store_true", default=None, help="allow fallback to local Chromium in CI/test")
     parser.add_argument("--keep-on-human-blocker", action="store_true", help="keep tab open on human blocker")
     parser.add_argument("--target-id", help="CDP target ID to attach/resume")
     parser.add_argument("--target-domain", help="Allowed target domain for credential fill")

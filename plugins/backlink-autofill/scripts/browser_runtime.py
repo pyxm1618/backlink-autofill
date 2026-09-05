@@ -331,7 +331,7 @@ class BrowserRuntime:
         credential_root: Path | None = None,
         timeout_ms: int = 30_000,
         cdp_url: str | None = None,
-        allow_local_fallback: bool = False,
+        allow_local_fallback: bool | None = None,
         keep_on_human_blocker: bool = False,
         keep_tab: bool = False,
         resume_target_id: str | None = None,
@@ -369,12 +369,10 @@ class BrowserRuntime:
             try:
                 session = self._context.new_cdp_session(page)
                 info = session.send("Target.getTargetInfo")
-                tid = info.get("targetInfo", {}).get("targetId")
-                session.detach()
-                if tid == target_id:
+                if info.get("targetInfo", {}).get("targetId") == target_id:
                     return page
             except Exception:
-                pass
+                continue
         return None
 
     def _get_page_target_id(self, page: Page) -> str | None:
@@ -398,10 +396,11 @@ class BrowserRuntime:
             or os.environ.get("BACKLINK_BROWSER_CDP_URL")
             or os.environ.get("SEO_BROWSER_CDP_URL")
         )
-        allow_fallback = (
-            self.allow_local_fallback
-            or os.environ.get("BACKLINK_ALLOW_LOCAL_FALLBACK", "").strip().lower() in {"1", "true", "yes"}
-        )
+        if self.allow_local_fallback is not None:
+            allow_fallback = bool(self.allow_local_fallback)
+        else:
+            allow_fallback = os.environ.get("BACKLINK_ALLOW_LOCAL_FALLBACK", "").strip().lower() in {"1", "true", "yes"}
+
         if not candidate_cdp and not allow_fallback:
             candidate_cdp = DEFAULT_CDP_URL
 
