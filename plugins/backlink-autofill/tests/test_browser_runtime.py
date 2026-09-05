@@ -66,8 +66,10 @@ class BrowserRuntimeTests(unittest.TestCase):
             self.assertIn("#submit", by_selector)
             self.assertEqual(by_selector["#password"]["sensitive"], True)
             self.assertEqual(by_selector["#confirm-password"]["sensitive"], True)
+            self.assertEqual(by_selector["#api-key"]["sensitive"], True)
             self.assertNotIn("value", by_selector["#password"])
             self.assertNotIn("value", by_selector["#confirm-password"])
+            self.assertNotIn("value", by_selector["#api-key"])
             self.assertLessEqual(len(result["page"]["body_excerpt"]), 4000)
 
     def test_passive_recaptcha_disclosure_does_not_trigger_human_handoff(self):
@@ -180,6 +182,34 @@ class BrowserRuntimeTests(unittest.TestCase):
             credential_actions = [item for item in result["actions"] if item["type"] == "credential_fill"]
             self.assertEqual(len(credential_actions), 2)
             self.assertTrue(all(item["readback"] == {"credential": "site_password", "verified": True} for item in credential_actions))
+
+    def test_credential_fill_refuses_api_key_or_other_non_password_sensitive_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "profile"
+            credential_root = root / "credentials"
+            actions = [
+                {
+                    "type": "credential_fill",
+                    "selector": "#api-key",
+                    "credential": "site_password",
+                    "mode": "create_or_reuse",
+                    "account": "test@example.com",
+                }
+            ]
+            proc = self.run_cli(
+                "execute",
+                "--profile-dir", str(profile),
+                "--browser-channel", "chromium",
+                "--credential-root", str(credential_root),
+                "--url", f"{self.base_url}/form.html",
+                "--actions-json", json.dumps(actions),
+                expect_ok=False,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            error = json.loads(proc.stderr)
+            self.assertEqual(error["error_code"], "CREDENTIAL_TARGET_NOT_PASSWORD")
+            self.assertEqual(list(credential_root.glob("*.json")), [])
 
     def test_password_fill_is_refused_without_echoing_secret(self):
         with tempfile.TemporaryDirectory() as tmp:
