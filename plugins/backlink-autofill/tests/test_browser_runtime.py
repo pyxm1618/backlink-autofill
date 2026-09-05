@@ -135,6 +135,9 @@ class BrowserRuntimeTests(unittest.TestCase):
             profile = root / "profile"
             credential_root = root / "credentials"
             actions = [
+                {"type": "fill", "selector": "#name", "value": "Test User"},
+                {"type": "fill", "selector": "#email", "value": "test@example.com"},
+                {"type": "fill", "selector": "#website", "value": "https://example.com/"},
                 {
                     "type": "credential_fill",
                     "selector": "#password",
