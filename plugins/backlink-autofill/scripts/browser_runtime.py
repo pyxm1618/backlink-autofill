@@ -386,12 +386,13 @@ class BrowserRuntime:
         except Exception as exc:
             raise BrowserRuntimeError("FIELD_INSPECTION_FAILED", "Could not inspect target field safely") from exc
 
-    def _verify_sensitive_password_target(self, locator: Locator) -> None:
+    def _verify_password_target(self, locator: Locator) -> None:
         try:
-            if not _is_sensitive_field(locator):
+            descriptor = _field_descriptor(locator)
+            if descriptor.get("type") != "password":
                 raise BrowserRuntimeError(
-                    "CREDENTIAL_TARGET_NOT_SENSITIVE",
-                    "credential_fill may only target a password/sensitive field",
+                    "CREDENTIAL_TARGET_NOT_PASSWORD",
+                    "credential_fill may only target an input with type=password",
                 )
         except BrowserRuntimeError:
             raise
@@ -475,7 +476,7 @@ class BrowserRuntime:
                         raise BrowserRuntimeError("READBACK_MISMATCH", f"Fill read-back mismatch at action {index}")
 
                 elif action_type == "credential_fill":
-                    self._verify_sensitive_password_target(locator)
+                    self._verify_password_target(locator)
                     password = self._site_password_for_action(action)
                     locator.fill(password)
                     if locator.input_value() != password:
