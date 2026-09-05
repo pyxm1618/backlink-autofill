@@ -104,6 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
     val_master_parser.add_argument("--prior-json", default="{}")
     val_master_parser.add_argument("--proposed-json", required=True)
 
+    otp_parser = subparsers.add_parser("resolve-email-otp")
+    _add_common(otp_parser)
+    otp_parser.add_argument("--stdin", action="store_true", required=True, help="read OTP ephemerally from stdin")
+
     return parser
 
 
@@ -251,6 +255,26 @@ def main() -> int:
                 proposed=proposed,
             )
             result = {"ok": True, "validated": validated}
+
+        elif args.command == "resolve-email-otp":
+            if not args.target_id:
+                return _emit_error("MISSING_TARGET_ID", "--target-id is required for resolve-email-otp")
+            if not args.stdin:
+                return _emit_error("STDIN_REQUIRED", "OTP must be passed via --stdin ephemeral channel")
+
+            otp_code = sys.stdin.read().strip()
+            if not otp_code:
+                return _emit_error("EMPTY_OTP_INPUT", "No OTP code received on stdin")
+
+            with BrowserRuntime(
+                profile_dir=Path(args.profile_dir),
+                browser_channel=args.browser_channel,
+                headed=args.headed,
+                cdp_url=args.cdp_url,
+                allow_local_fallback=args.allow_local_fallback,
+                resume_target_id=args.target_id,
+            ) as runtime:
+                result = runtime.resolve_email_otp(args.target_id, otp_code)
 
         else:
             return _emit_error("INVALID_COMMAND", "unsupported command")

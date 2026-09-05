@@ -793,3 +793,85 @@ class BrowserRuntime:
             "target_id": self.target_id,
             "is_external_cdp": self.is_external_cdp,
         }
+
+    def resolve_email_otp(self, target_id: str, otp_code: str, wait_timeout_ms: int = 5000) -> dict[str, Any]:
+        """Fill ephemeral email verification code into target tab and submit.
+        
+        Security guarantees:
+        - Never returns or echoes the OTP code in result dictionary.
+        - Preserves existing tab state; does not reload or restart page.
+        """
+        assert self.page is not None
+        if not otp_code or not str(otp_code).strip():
+            raise BrowserRuntimeError("EMPTY_OTP", "OTP code cannot be empty")
+
+        clean_code = str(otp_code).strip()
+
+        candidate_selectors = [
+            'input[autocomplete="one-time-code"]',
+            'input[placeholder*="code" i]',
+            'input[placeholder*="digit" i]',
+            'input[name*="code" i]',
+            'input[name*="otp" i]',
+            'form input[type="text"]:not([disabled])',
+            'input:not([type="hidden"]):not([disabled])',
+        ]
+        input_locator = None
+        for sel in candidate_selectors:
+            loc = self.page.locator(sel).first
+            try:
+                if loc.count() > 0 and loc.is_visible():
+                    input_locator = loc
+                    break
+            except Exception:
+                continue
+
+        if input_locator is None:
+            raise BrowserRuntimeError("OTP_INPUT_NOT_FOUND", "Could not locate visible OTP input on current page")
+
+        try:
+            input_locator.fill(clean_code)
+        except Exception as exc:
+            raise BrowserRuntimeError("OTP_FILL_FAILED", f"Failed to fill OTP input: {type(exc).__name__}") from exc
+
+        button_selectors = [
+            'button[type="submit"]',
+            'button:has-text("Verify")',
+            'button:has-text("Continue")',
+            'button:has-text("Confirm")',
+            'button:has-text("Submit")',
+            'input[type="submit"]',
+        ]
+        submit_locator = None
+        for b_sel in button_selectors:
+            b_loc = self.page.locator(b_sel).first
+            try:
+                if b_loc.count() > 0 and b_loc.is_visible():
+                    submit_locator = b_loc
+                    break
+            except Exception:
+                continue
+
+        if submit_locator is not None:
+            try:
+                submit_locator.click()
+            except Exception as exc:
+                raise BrowserRuntimeError("OTP_SUBMIT_FAILED", f"Failed to click OTP submit button: {type(exc).__name__}") from exc
+
+        try:
+            self.page.wait_for_timeout(500)
+        except Exception:
+            pass
+
+        current_snapshot = snapshot_page(self.page)
+        if not current_snapshot.get("human_blocker"):
+            self._stopped_for_human = False
+
+        return {
+            "ok": True,
+            "action": "EMAIL_OTP_RESOLVED",
+            "target_id": self.target_id,
+            "current_url": self.page.url,
+            "stopped_for_human": self._stopped_for_human,
+        }
+

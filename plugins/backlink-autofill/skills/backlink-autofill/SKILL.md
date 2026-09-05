@@ -264,6 +264,29 @@ When the user completes the human step in the visible Chrome window and asks to 
    - **Do NOT delete the pending record**;
    - Retain `需人工` status and inform the user.
 
+### 9b. Automated EMAIL_OTP resolution via host mail capability
+
+When the browser runtime halts on an `EMAIL_OTP` blocker, the Agent should attempt automated, secure resolution if host mail capability is active:
+
+1. **Host-agnostic Capability Detection**:
+   - Inspect the tools exposed in the current AI host session:
+     - **Codex**: Check if the authorized Gmail Plugin / connected app tools are available;
+     - **Google Antigravity**: Check if the authorized Gmail MCP tools (`gmail_search`, `gmail_get_message`) are available.
+   - Do NOT hardcode detection by model name strings. If neither capability is active or authorized, fall back gracefully to `需人工` with reason `"Mail capability unavailable"`.
+2. **Search Narrow Window**:
+   - Query messages matching `to:<registration_email>` received within the recent narrow window (`blocker_started_at` ± a few minutes) related to the platform name/domain.
+3. **Core Resolver & Security Invariants**:
+   - Pass retrieved messages to the universal Core Resolver (`email_otp_resolver.py`):
+     - **Per-candidate Protected Auth exclusion**: Any Google/GitHub/IdP login, password reset, or payment verification email is strictly excluded per-candidate.
+     - **Universal Platform Identity Scoring**: Evaluates recipient, time window, sender display name, subject, body, and link domain (fully supporting third-party ESPs like Resend, Postmark, SendGrid, SES).
+     - **Deterministic Ambiguity Rejection**: Requires a single high-confidence candidate. If multiple conflicting candidates exist (`EMAIL_OTP_AMBIGUOUS`) or none match (`EMAIL_OTP_NOT_FOUND`), fall back to `需人工`.
+4. **Ephemeral Secret Transmission via Stdin**:
+   - **Strict Prohibition on `echo "<OTP>" | ...`**: Never include OTP values in shell commands, command-line arguments (argv), or logged command strings, which would leak into transcript history.
+   - Run `browser_cli.py resolve-email-otp --stdin ...` with the target CDP `target_id`. Feed the OTP strictly through the spawned child process's standard input stream.
+   - The CLI output confirms only `EMAIL_OTP_RESOLVED` and never echoes the code value.
+5. **Seamless Continuation**:
+   - Upon successful verification, the browser tab moves directly to the next onboarding/submission step without page reload and without re-registering.
+
 ### 10. Classify outcome from evidence
 
 Classify status strictly according to the strongest verifiable browser evidence (Invariant 4):
