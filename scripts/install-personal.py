@@ -22,9 +22,10 @@ def load_marketplace(path: Path):
 
 def ensure_private_data_root(home: Path):
     config_dir = home / ".backlink-autofill"
-    projects_dir = config_dir / "projects"
     config_dir.mkdir(parents=True, exist_ok=True)
-    projects_dir.mkdir(parents=True, exist_ok=True)
+
+    for dirname in ("projects", "browser-profile", "runtime", "recipes"):
+        (config_dir / dirname).mkdir(parents=True, exist_ok=True)
 
     profile_path = config_dir / "submitter-profile.json"
     if profile_path.exists():
@@ -79,11 +80,16 @@ def main():
     marketplace_path.write_text(json.dumps(marketplace, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     profile_path, created = ensure_private_data_root(home)
+    private_root = home / ".backlink-autofill"
 
     print(f"Installed plugin: {destination}")
     print(f"Updated marketplace: {marketplace_path}")
     print(f"Shared submitter profile: {profile_path}{' (created)' if created else ' (preserved)'}")
-    print(f"Project data root: {home / '.backlink-autofill' / 'projects'} (preserved)")
+    print(f"Shared control plane: {private_root / 'control-plane.json'} (preserved if present; configure separately)")
+    print(f"Project data root: {private_root / 'projects'} (preserved)")
+    print(f"Browser profile: {private_root / 'browser-profile'} (preserved)")
+    print(f"Runtime checkpoints: {private_root / 'runtime'} (preserved)")
+    print(f"Domain recipes: {private_root / 'recipes'} (preserved)")
     print("Personal data is shared once; project assets must live under projects/<project-id>/ and never mix across projects.")
     print("Passwords are not stored in this data root.")
     print("Restart/reload Codex, then invoke $backlink-autofill and explicitly name the project.")
