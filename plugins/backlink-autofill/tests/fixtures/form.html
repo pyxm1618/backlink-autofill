@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Backlink Test Form</title>
+</head>
+<body>
+  <main>
+    <h1>Submit product</h1>
+    <div id="persisted" hidden>Previous session present</div>
+    <form id="submission-form">
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" required>
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" required>
+
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password">
+
+      <label for="confirm-password">Confirm Password</label>
+      <input id="confirm-password" name="confirm_password" type="password">
+
+      <label for="api-key">API Key</label>
+      <input id="api-key" name="api_key" type="text">
+
+      <label for="website">Website</label>
+      <input id="website" name="website" type="url" required>
+
+      <label for="description">Description</label>
+      <textarea id="description" name="description"></textarea>
+
+      <label for="category">Category</label>
+      <select id="category" name="category">
+        <option value="">Choose</option>
+        <option value="Reference">Reference</option>
+        <option value="Spirituality">Spirituality</option>
+      </select>
+
+      <label for="logo">Logo</label>
+      <input id="logo" name="logo" type="file" accept="image/*">
+
+      <label><input id="agree" name="agree" type="checkbox"> I confirm these facts are accurate</label>
+      <button id="submit" type="submit">Submit listing</button>
+    </form>
+    <p id="password-error" hidden>Passwords do not match</p>
+  </main>
+  <script>
+    if (localStorage.getItem('submitted') === 'yes') {
+      document.getElementById('persisted').hidden = false;
+    }
+
+    document.getElementById('submission-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const password = document.getElementById('password').value;
+      const confirm = document.getElementById('confirm-password').value;
+      if ((password || confirm) && (!password || password !== confirm)) {
+        document.getElementById('password-error').hidden = false;
+        return;
+      }
+      localStorage.setItem('submitted', 'yes');
+      history.pushState({}, '', '/success');
+      document.body.innerHTML = '<main><h1 id="success">Submission received</h1><p>Pending review</p></main>';
+      document.title = 'Submission received';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "name": "backlink-autofill",
+  "interface": {
+    "displayName": "Backlink Autofill"
+  },
+  "plugins": [
+    {
+      "name": "backlink-autofill",
+      "source": {
+        "source": "local",
+        "path": "./plugins/backlink-autofill"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Marketing"
+    }
+  ]
+}

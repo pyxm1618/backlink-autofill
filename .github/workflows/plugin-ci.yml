@@ -1,0 +1,128 @@
+name: Plugin CI
+
+on:
+  push:
+    branches: ['feat/codex-plugin', 'main']
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      BACKLINK_ALLOW_LOCAL_FALLBACK: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate plugin structure and hard gates
+        run: node scripts/validate-plugin.mjs
+      - name: Test execution state and recipe storage
+        run: python3 plugins/backlink-autofill/tests/test_execution_state.py -v
+      - name: Install browser runtime dependencies
+        run: |
+          python3 -m pip install -r plugins/backlink-autofill/scripts/requirements.txt
+          python3 -m playwright install --with-deps chromium
+      - name: Test headless browser runtime
+        run: python3 plugins/backlink-autofill/tests/test_browser_runtime.py -v
+      - name: Test CDP persistent session
+        run: python3 plugins/backlink-autofill/tests/test_cdp_session.py -v
+      - name: Test OAuth security and composite EMAIL_OTP
+        run: python3 plugins/backlink-autofill/tests/test_oauth_security.py -v
+      - name: Test tab isolation and resume protocol
+        run: python3 plugins/backlink-autofill/tests/test_tab_isolation.py -v
+      - name: Test headed human handoff
+        run: xvfb-run -a python3 plugins/backlink-autofill/tests/test_browser_handoff.py -v
+      - name: Test personal installer and shared control plane in isolated HOME
+        run: |
+          export HOME="$RUNNER_TEMP/test-home"
+          mkdir -p "$HOME/.agents/plugins"
+          cat > "$HOME/.agents/plugins/marketplace.json" <<'JSON'
+          {
+            "name": "personal",
+            "plugins": [
+              {
+                "name": "existing-plugin",
+                "source": {"source": "local", "path": "./plugins/existing-plugin"},
+                "policy": {"installation": "AVAILABLE", "authentication": "ON_USE"},
+                "category": "Developer Tools"
+              }
+            ]
+          }
+          JSON
+
+          python3 scripts/install-personal.py --repo "$GITHUB_WORKSPACE"
+          test -f "$HOME/plugins/backlink-autofill/.codex-plugin/plugin.json"
+          test -f "$HOME/.backlink-autofill/submitter-profile.json"
+          test -d "$HOME/.backlink-autofill/projects"
+          test -d "$HOME/.backlink-autofill/browser-profile"
+          test -d "$HOME/.backlink-autofill/runtime"
+          test -d "$HOME/.backlink-autofill/recipes"
+          test -d "$HOME/.backlink-autofill/credentials"
+
+          python3 scripts/configure-control-plane.py \
+            --spreadsheet-id TEST_SHEET_ID \
+            --home "$HOME"
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          home = Path(os.environ['HOME'])
+          root = home / '.backlink-autofill'
+          marketplace = json.loads((home / '.agents/plugins/marketplace.json').read_text())
+          by_name = {x['name']: x for x in marketplace['plugins']}
+          assert 'existing-plugin' in by_name, by_name
+          assert 'backlink-autofill' in by_name, by_name
+          assert by_name['backlink-autofill']['source']['path'] == './plugins/backlink-autofill'
+
+          profile = root / 'submitter-profile.json'
+          payload = json.loads(profile.read_text())
+          canonical = {
+              'schema_version', 'name', 'registration_email', 'country', 'region', 'city',
+              'company', 'job_title', 'phone', 'x_twitter', 'linkedin', 'github',
+              'default_username', 'notes'
+          }
+          assert set(payload) == canonical, payload
+          payload['name'] = 'Persistent User'
+          payload['registration_email'] = 'persistent@example.com'
+          profile.write_text(json.dumps(payload))
+
+          control = root / 'control-plane.json'
+          control_payload = json.loads(control.read_text())
+          assert control_payload == {
+              'schema_version': 1,
+              'spreadsheet_id': 'TEST_SHEET_ID',
+              'master_sheet': '外链总表',
+              'project_sheet': '项目外链管理',
+              'default_batch_size': 100,
+          }, control_payload
+
+          project_b = root / 'projects/project-b'
+          project_b.mkdir(parents=True)
+          (project_b / 'marker.txt').write_text('KEEP')
+
+          credentials = root / 'credentials'
+          (credentials / 'example.com.json').write_text('{"keep": true}')
+          print('initial installer/control-plane validation passed')
+          PY
+
+          python3 scripts/install-personal.py --repo "$GITHUB_WORKSPACE"
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          root = Path(os.environ['HOME']) / '.backlink-autofill'
+          payload = json.loads((root / 'submitter-profile.json').read_text())
+          assert payload['name'] == 'Persistent User', payload
+          assert payload['registration_email'] == 'persistent@example.com', payload
+          assert (root / 'projects/project-b/marker.txt').read_text() == 'KEEP'
+          assert (root / 'credentials/example.com.json').read_text() == '{"keep": true}'
+          control_payload = json.loads((root / 'control-plane.json').read_text())
+          assert control_payload['spreadsheet_id'] == 'TEST_SHEET_ID', control_payload
+          assert control_payload['master_sheet'] == '外链总表', control_payload
+          assert control_payload['project_sheet'] == '项目外链管理', control_payload
+          assert control_payload['default_batch_size'] == 100, control_payload
+          print('shared profile, control plane, credentials, runtime dirs, and sibling project preservation passed')
+          PY

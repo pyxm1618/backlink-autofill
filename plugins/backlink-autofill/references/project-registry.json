@@ -1,0 +1,10 @@
+{
+  "projects": [
+    {
+      "id": "quick-iching",
+      "name": "Quick I Ching",
+      "aliases": ["quickiching", "quickiching.com"],
+      "profile": "./projects/quick-iching.md"
+    }
+  ]
+}
