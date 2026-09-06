@@ -525,6 +525,161 @@ class EmailOtpResolverTests(unittest.TestCase):
                 # 异常消息中绝对不泄漏 secret_token
                 self.assertNotIn(secret_token, ctx.exception.message)
 
+    def test_extract_verification_link_strictly_filters_footers_and_requires_cta(self):
+        """P0-3: 消除 Magic Link 假候选：排除主页/条款/退订，支持带 CTA 上下文的 opaque ESP URL"""
+        from email_otp_resolver import _extract_verification_link
+
+        platform = "foundrlist.com"
+
+        # 1. 纯主页无 cue：绝对不选为候选
+        email_homepage_only = "Welcome to FoundrList! Visit us at https://foundrlist.com anytime."
+        self.assertIsNone(_extract_verification_link(email_homepage_only, platform))
+
+        # 2. 条款/隐私/退订链接：绝对不选为候选
+        email_footers = """
+        Thanks for using FoundrList.
+        Terms: https://foundrlist.com/terms
+        Privacy: https://foundrlist.com/privacy
+        Unsubscribe: https://click.postmarkapp.com/unsubscribe/xyz123
+        """
+        self.assertIsNone(_extract_verification_link(email_footers, platform))
+
+        # 3. HTML 带有退订 anchor：排除
+        html_unsub = '<a href="https://click.postmarkapp.com/track/opaque_unsub">Unsubscribe from email</a>'
+        self.assertIsNone(_extract_verification_link(html_unsub, platform))
+
+        # 4. Opaque ESP tracking URL 配合 verification CTA：成功提取！
+        html_opaque_cta = """
+        <div>
+          <p>Please click below to activate your account:</p>
+          <a href="https://click.postmarkapp.com/track/opaque_magic_link_token_123">Confirm your email</a>
+        </div>
+        """
+        link = _extract_verification_link(html_opaque_cta, platform)
+        self.assertEqual(link, "https://click.postmarkapp.com/track/opaque_magic_link_token_123")
+
+        # 5. 纯文本 opaque ESP URL 紧邻验证提示：成功提取！
+        text_opaque_cta = """
+        To finish signing in, click the link below to verify your email address:
+        https://click.postmarkapp.com/track/opaque_txt_789
+        """
+        link_txt = _extract_verification_link(text_opaque_cta, platform)
+        self.assertEqual(link_txt, "https://click.postmarkapp.com/track/opaque_txt_789")
+
+    def test_resolve_email_magic_link_detects_expired_or_invalid(self):
+        """P0-3: Magic link 落地到失效或过期页面，抛出 MAGIC_LINK_EXPIRED_OR_INVALID"""
+        import tempfile
+        import threading
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from functools import partial
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            html_file = tmp_dir / "expired.html"
+            html_file.write_text("<!DOCTYPE html><html><body><h1>Your verification token has expired</h1></body></html>", encoding="utf-8")
+            handler = partial(SimpleHTTPRequestHandler, directory=str(tmp_dir))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            port = server.server_port
+            expired_url = f"http://127.0.0.1:{port}/expired.html"
+
+            try:
+                profile = tmp_dir / "profile"
+                with browser_runtime.BrowserRuntime(
+                    profile_dir=profile,
+                    browser_channel="chromium",
+                    allow_local_fallback=True,
+                ) as rt:
+                    rt.navigate(f"http://127.0.0.1:{port}/expired.html")
+                    with self.assertRaises(browser_runtime.BrowserRuntimeError) as ctx:
+                        rt.resolve_email_magic_link(
+                            target_id="",
+                            magic_link=expired_url,
+                            platform_domain=f"127.0.0.1:{port}",
+                        )
+                    self.assertEqual(ctx.exception.code, "MAGIC_LINK_EXPIRED_OR_INVALID")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_resolve_email_magic_link_rejects_unconfirmed_without_positive_evidence(self):
+        """P0-3: 仅到达 /dashboard 缺乏正面验证证据，严禁假成功，抛出 MAGIC_LINK_UNCONFIRMED"""
+        import tempfile
+        import threading
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from functools import partial
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            html_file = tmp_dir / "dashboard.html"
+            # 页面只有普通文本和 Logout，没有明确 verification success
+            html_file.write_text("<!DOCTYPE html><html><body><h1>Dashboard</h1><button>Logout</button></body></html>", encoding="utf-8")
+            handler = partial(SimpleHTTPRequestHandler, directory=str(tmp_dir))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            port = server.server_port
+            dashboard_url = f"http://127.0.0.1:{port}/dashboard.html"
+
+            try:
+                profile = tmp_dir / "profile"
+                with browser_runtime.BrowserRuntime(
+                    profile_dir=profile,
+                    browser_channel="chromium",
+                    allow_local_fallback=True,
+                ) as rt:
+                    rt.navigate(f"http://127.0.0.1:{port}/dashboard.html")
+                    with self.assertRaises(browser_runtime.BrowserRuntimeError) as ctx:
+                        rt.resolve_email_magic_link(
+                            target_id="",
+                            magic_link=dashboard_url,
+                            platform_domain=f"127.0.0.1:{port}",
+                        )
+                    self.assertEqual(ctx.exception.code, "MAGIC_LINK_UNCONFIRMED")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_resolve_email_magic_link_succeeds_with_explicit_dom_success(self):
+        """P0-3: DOM 出现明确成功文案，正确返回验证成功"""
+        import tempfile
+        import threading
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from functools import partial
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            html_file = tmp_dir / "confirmed.html"
+            html_file.write_text("<!DOCTYPE html><html><body><h1>Your email has been verified!</h1></body></html>", encoding="utf-8")
+            handler = partial(SimpleHTTPRequestHandler, directory=str(tmp_dir))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            port = server.server_port
+            confirmed_url = f"http://127.0.0.1:{port}/confirmed.html"
+
+            try:
+                profile = tmp_dir / "profile"
+                with browser_runtime.BrowserRuntime(
+                    profile_dir=profile,
+                    browser_channel="chromium",
+                    allow_local_fallback=True,
+                ) as rt:
+                    rt.navigate(f"http://127.0.0.1:{port}/confirmed.html")
+                    res = rt.resolve_email_magic_link(
+                        target_id="",
+                        magic_link=confirmed_url,
+                        platform_domain=f"127.0.0.1:{port}",
+                    )
+                    self.assertTrue(res["ok"])
+                    self.assertEqual(res["action"], "MAGIC_LINK_RESOLVED")
+                    self.assertTrue(res["verification_succeeded"])
+                    self.assertEqual(res["safe_landed_domain"], "127.0.0.1")
+            finally:
+                server.shutdown()
+                server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

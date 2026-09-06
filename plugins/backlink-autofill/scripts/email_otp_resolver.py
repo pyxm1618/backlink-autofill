@@ -136,6 +136,43 @@ _ESP_CLICK_DOMAINS = (
     "customeriomail.com",
 )
 
+_EXCLUDED_URL_TERMS = (
+    "unsubscribe",
+    "opt-out",
+    "optout",
+    "privacy",
+    "terms",
+    "tos",
+    "preference",
+    "preferences",
+    "reset-password",
+    "password_reset",
+    "password-reset",
+    "resetpassword",
+    "billing",
+    "payment",
+    "help",
+    "support",
+)
+
+_VERIFICATION_CUES = (
+    "verify",
+    "verification",
+    "confirm",
+    "confirmation",
+    "magic",
+    "token",
+    "activate",
+    "activation",
+    "signin",
+    "sign-in",
+    "signup",
+    "sign-up",
+    "login",
+    "log-in",
+    "authenticate",
+)
+
 
 def is_protected_auth_email(msg: EmailMessage, req: EmailVerificationRequest) -> bool:
     """Per-candidate Protected Auth check.
@@ -318,28 +355,52 @@ def is_allowed_initial_magic_link_host(host: str, platform_domain: str) -> bool:
 
 
 def _extract_verification_link(text: str, platform_domain: str) -> str | None:
-    """Extract a platform verification / magic link from email text.
+    """Extract a platform verification / magic link from email text or HTML.
     
     Security rules:
     - Strictly excludes links pointing to protected third-party IdPs.
-    - Strictly excludes password reset or payment/billing links.
-    - Supports target platform domain, platform subdomains, and trusted ESP redirect hosts.
-    - Strictly enforces DNS label boundary matching (no weak substring containment).
+    - Strictly excludes password reset, payment/billing, and footer/unsubscribe links.
+    - Opaque ESP click-tracking URLs require explicit verification CTA context.
+    - Strictly forbids falling back to arbitrary platform links (e.g. homepage, terms) without verification evidence.
+    - Enforces strict DNS label boundary matching.
     """
-    urls = re.findall(r"https?://[^\s<>\"')]+", text)
-    if not urls:
+    if not text or not platform_domain:
         return None
 
     clean_platform = platform_domain.lower().strip()
     if clean_platform.startswith("www."):
         clean_platform = clean_platform[4:]
 
-    link_cues = ("verify", "verification", "confirm", "magic", "token", "activate", "signin", "sign-in", "signup")
+    # 1. 提取所有 URL 及对应上下文 (url, context_text)
+    extracted_items: list[tuple[str, str]] = []
+
+    # 1a. 从 HTML <a> 标签提取 href 与 anchor text
+    html_a_pattern = re.compile(r'<a\s+[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+    for m in html_a_pattern.finditer(text):
+        u = m.group(1).strip()
+        anchor_text = re.sub(r"<[^>]+>", " ", m.group(2)).strip()
+        extracted_items.append((u, anchor_text))
+
+    # 1b. 提取普通文本中的 URL 及其前后文
+    url_matches = list(re.finditer(r"https?://[^\s<>\"')]+", text))
+    for m in url_matches:
+        u = m.group(0).rstrip(".,;!?:")
+        start = max(0, m.start() - 120)
+        end = min(len(text), m.end() + 120)
+        surrounding = text[start:end]
+        extracted_items.append((u, surrounding))
 
     candidates: list[tuple[int, str]] = []
-    for raw_url in urls:
+    seen_urls: set[str] = set()
+
+    for raw_url, context in extracted_items:
         url = raw_url.rstrip(".,;!?:")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+
         url_lower = url.lower()
+        context_lower = context.lower()
         parsed = urlparse(url_lower)
         netloc = (parsed.netloc or "").split(":")[0]
 
@@ -347,20 +408,31 @@ def _extract_verification_link(text: str, platform_domain: str) -> str | None:
         if any(is_safe_subdomain_or_exact(netloc, idp) for idp in _PROTECTED_IDP_DOMAINS):
             continue
 
-        # 2. 严格排除密码重置或支付链接
-        if any(kw in url_lower for kw in ("reset-password", "password_reset", "password-reset", "resetpassword", "billing", "payment")):
+        # 2. 严格排除退订、隐私、条款、偏好设置、密码重置、账单等
+        url_combined = f"{parsed.path} {parsed.query}"
+        if any(term in url_combined for term in _EXCLUDED_URL_TERMS):
+            continue
+        if any(term in context_lower for term in ("unsubscribe", "opt out", "opt-out", "privacy policy", "terms of service", "manage preferences", "email preferences")):
             continue
 
-        has_cue = any(cue in url_lower for cue in link_cues)
         is_platform_host = is_safe_subdomain_or_exact(netloc, clean_platform)
         is_esp_host = any(is_safe_subdomain_or_exact(netloc, esp) for esp in _ESP_CLICK_DOMAINS)
 
-        if is_platform_host and has_cue:
-            candidates.append((3, url))
-        elif is_esp_host and has_cue:
+        if not (is_platform_host or is_esp_host):
+            continue
+
+        has_url_cue = any(cue in url_lower for cue in _VERIFICATION_CUES)
+        has_context_cue = any(cue in context_lower for cue in _VERIFICATION_CUES)
+
+        # 核心防守：若 URL 本身和周围 context 均没有 verification cue，坚决不选为候选！
+        if not (has_url_cue or has_context_cue):
+            continue
+
+        if is_platform_host:
+            score = 3 if has_url_cue else 2
+            candidates.append((score, url))
+        elif is_esp_host:
             candidates.append((2, url))
-        elif is_platform_host:
-            candidates.append((1, url))
 
     if not candidates:
         return None

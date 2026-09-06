@@ -110,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
     val_start_parser.add_argument("--project-row-json", required=True)
     val_start_parser.add_argument("--master-rows-json", required=True)
     val_start_parser.add_argument("--now-iso")
+    val_start_parser.add_argument(
+        "--resume-same-attempt",
+        action="store_true",
+        default=False,
+        help="resume execution for proven-unsubmitted attempt without incrementing attempt count",
+    )
 
     otp_parser = subparsers.add_parser("resolve-email-otp")
     _add_common(otp_parser)
@@ -316,6 +322,7 @@ def main() -> int:
                 project_row=project_row,
                 master_rows=master_rows,
                 now_iso=args.now_iso,
+                resume_same_attempt=args.resume_same_attempt,
             )
 
         elif args.command == "resolve-email-otp":

@@ -123,24 +123,30 @@ Immediately before any attempt increment or browser launch:
 
 1. Re-read the exact original row from `外链管理`;
 2. Confirm `项目ID` still equals selected project;
-3. Confirm status is eligible for this action (`待提交`, or an explicitly resumed known-safe `需人工` row);
+3. Confirm status is eligible for this action:
+   - **Normal start**: row status must be `待提交`;
+   - **Same-attempt resume**: row status must be proven-unsubmitted `需人工` or interrupted `处理中`. Pass `--resume-same-attempt`. If previous attempt ended with uncertain submission outcome ("提交结果不确定", "结果不明确", "避免重复提交"), auto-resume is strictly forbidden and it must remain `需人工`.
 4. Join by `外链ID` to `外链总表` candidates, and enforce the mandatory production gate:
    ```bash
    python3 -m browser_cli validate-execution-start \
-     --project-row-json '{"外链ID": "...", "项目ID": "...", "尝试次数": "0", "目标URL": "..."}' \
-     --master-rows-json '[{"外链ID": "...", "基础状态": "候选", "提交入口": "https://..."}]'
+     --project-row-json '{"外链ID": "...", "项目ID": "...", "状态": "待提交", "尝试次数": "0", "目标URL": "..."}' \
+     --master-rows-json '[{"外链ID": "...", "平台域名": "example.com", "基础状态": "候选", "提交入口": "https://example.com/submit"}]'
    ```
-5. **If ineligible (`eligible == false`)**:
-   - Master missing → `状态 = 失败`, `原因 = 外链ID在外链总表中不存在`;
-   - Master duplicate → `状态 = 失败`, `原因 = 外链ID在外链总表中不唯一`;
-   - Master `基础状态 == 已排除` → `状态 = 不适用`, `原因 = 外链总表基础状态为已排除：<基础排除原因>`;
-   - Master `基础状态 == 失效` → `状态 = 失败`, `原因 = 外链总表基础状态为失效`;
-   - Missing/invalid entry URL → `状态 = 失败`, `原因 = 缺少有效提交入口`.
-   - **CRITICAL CONTRACT**: In all ineligible cases, write back terminal state immediately, **DO NOT increment `尝试次数`** (it strictly tracks browser attempts), and **DO NOT launch browser**.
-   - Do not silently web-search a replacement URL for a data-integrity failure.
+   For same-attempt resume:
+   ```bash
+   python3 -m browser_cli validate-execution-start \
+     --resume-same-attempt \
+     --project-row-json '{"外链ID": "...", "项目ID": "...", "状态": "需人工", "尝试次数": "1", "目标URL": "..."}' \
+     --master-rows-json '[{"外链ID": "...", "平台域名": "example.com", "基础状态": "候选", "提交入口": "https://example.com/submit"}]'
+   ```
+5. **Enforce Gate Criteria**:
+   - **Join identity**: `project.外链ID == master.外链ID` (exact match, non-empty, exactly one master row);
+   - **Master status**: `master.基础状态` must be strictly equal to `候选`. Empty, unknown, or illegal status fails closed to `失败`; `已排除` fails to `不适用`; `失效` fails to `失败`;
+   - **Domain identity**: canonical `master.平台域名` is mandatory authority. `提交入口` must be an absolute http/https URL whose hostname matches `master.平台域名` or its valid subdomain on DNS label boundaries;
+   - In all ineligible cases (`eligible == false`), write back terminal state immediately, **DO NOT increment `尝试次数`**, and **DO NOT launch browser**.
 6. **If eligible (`eligible == true`)**:
-   - Only now set `状态 = 处理中`, **increment `尝试次数` by 1** (`next_attempt_count`), and set `最近操作时间`;
-   - For an explicitly resumed proven-unsubmitted continuation, set `状态 = 处理中` without incrementing the attempt count;
+   - **Normal start**: set `状态 = 处理中`, **increment `尝试次数` by 1** (`next_attempt_count`);
+   - **Same-attempt resume (`--resume-same-attempt`)**: set `状态 = 处理中`, **retain existing `尝试次数` without increment**;
    - **Re-read the exact row after every Sheet mutation** and verify intended values;
    - Create/update project+row checkpoint before website mutation. Checkpoints contain only safe state, never credentials.
 
@@ -306,19 +312,22 @@ When the browser runtime halts on an `EMAIL_OTP` or platform email verification 
    - Do NOT hardcode detection by model name strings. If neither capability is active or authorized, fall back gracefully to `需人工` with reason `"Mail capability unavailable"`.
 2. **Search Narrow Window**:
    - Query messages matching `to:<registration_email>` received within the recent narrow window (`blocker_started_at` ± a few minutes) related to the platform name/domain.
-3. **Core Resolver & Two-layer Security Invariants**:
+3. **Core Resolver & Multi-layer Security Invariants**:
    - Pass retrieved messages to the universal Core Resolver (`email_otp_resolver.py`):
      - **Layer 1: High-confidence platform email**: Must match recipient, blocker time window, and platform identity (compatible with ESPs like Postmark, SendGrid, Resend, SES).
      - **Per-candidate Protected Auth exclusion**: Any Google/GitHub/Microsoft/Apple primary IdP login, password reset, account recovery, or payment verification email is strictly excluded per-candidate.
-     - **Magic Link Support**: If the platform sends a confirmation link instead of numeric OTP, extract the verification link. The initial URL may pass through trusted ESP redirect hosts, but must never navigate to protected IdPs.
+     - **Magic Link Extraction Rules**: Exclude footer, unsubscribe (`unsubscribe`, `opt-out`, `privacy`, `terms`), and password reset links. Opaque ESP tracking URLs require explicit verification CTA context. Fallback to arbitrary platform homepage without verification evidence is strictly forbidden.
      - **Deterministic Ambiguity Rejection**: Requires a single high-confidence candidate. If multiple conflicting candidates exist (`EMAIL_OTP_AMBIGUOUS`) or none match (`EMAIL_OTP_NOT_FOUND`), fall back to `需人工`.
 4. **Ephemeral Secret Transmission via Stdin**:
    - **Strict Prohibition on logging secrets**: Never include OTP values or tokenized Magic Links in shell commands, command-line arguments (argv), logged command strings, or Sheet rows.
    - For numeric/alphanumeric code: run `browser_cli.py resolve-email-otp --stdin ...` with code piped via stdin.
    - For Magic Link: run `browser_cli.py resolve-magic-link --stdin --platform-domain <domain> ...` with URL piped via stdin.
-   - **Layer 2: Browser Identity Closure**: When resolving a Magic Link, browser navigates under control. The final destination page must achieve target platform identity closure without falling into protected IdP authentication.
-5. **Seamless Continuation**:
-   - Upon successful verification, the browser moves directly to the next onboarding/submission step without re-registering and without entering `需人工`.
+5. **Decoupled Safe Navigation vs Verification Success**:
+   - **Layer 2: Browser Identity Closure & Safe Navigation**: The browser navigates under control. The final destination page must achieve target platform identity closure without falling into protected IdP authentication.
+   - **Expiration/Invalidity Detection**: If landed URL or DOM indicates an expired or invalid token (`MAGIC_LINK_EXPIRED_OR_INVALID`), treat it as an execution process error. Do not write terminal `失败` immediately; allow re-requesting email or escalate to `需人工`.
+   - **Strict Verification Success Gate**: Auxiliary signals (`/dashboard`, `/welcome`, `/onboarding`, or a `Logout` button) alone do NOT prove verification success. Verification requires explicit positive proof (URL confirmation parameter, DOM success announcement) or a proven blocker-cleared continuation. Lacking positive proof raises `MAGIC_LINK_UNCONFIRMED`.
+6. **Seamless Continuation**:
+   - Upon proven verification success, the browser moves directly to the next onboarding/submission step without re-registering and without entering `需人工`.
 
 ### 9. Classify outcome from evidence
 

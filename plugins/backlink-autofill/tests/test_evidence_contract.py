@@ -537,6 +537,7 @@ class TestMasterGateProtection(unittest.TestCase):
         }
         valid_master = [{
             "外链ID": "valid.com",
+            "平台域名": "valid.com",
             "基础状态": "候选",
             "提交入口": "https://valid.com/submit",
         }]
@@ -594,6 +595,7 @@ class TestMasterGateProtection(unittest.TestCase):
                 "--master-rows-json",
                 json.dumps([{
                     "外链ID": "good.com",
+                    "平台域名": "good.com",
                     "基础状态": "候选",
                     "提交入口": "https://good.com/submit",
                 }]),
@@ -609,6 +611,197 @@ class TestMasterGateProtection(unittest.TestCase):
         self.assertEqual(out_eligible["proposed_status"], "处理中")
         self.assertEqual(out_eligible["next_attempt_count"], 1)
         self.assertEqual(out_eligible["verified_entry_url"], "https://good.com/submit")
+
+    def test_validate_execution_start_empty_project_backlink_id(self):
+        """P0-Gate: project 外链ID 为空，直接失败，不自增尝试次数"""
+        from execution_state import validate_execution_start
+
+        project_row = {"外链ID": "   ", "状态": "待提交", "尝试次数": "1"}
+        master_rows = [{"外链ID": "valid.com", "平台域名": "valid.com", "基础状态": "候选", "提交入口": "https://valid.com"}]
+        res = validate_execution_start(project_row, master_rows)
+        self.assertFalse(res["eligible"])
+        self.assertEqual(res["proposed_status"], "失败")
+        self.assertIn("缺少外链ID", res["reason"])
+        self.assertEqual(res["next_attempt_count"], 1)
+
+    def test_validate_execution_start_wrong_master_id(self):
+        """P0-Gate: master.外链ID != project.外链ID，Join 身份不一致必须失败"""
+        from execution_state import validate_execution_start
+
+        project_row = {"外链ID": "alpha.com", "状态": "待提交", "尝试次数": "0"}
+        master_rows = [{"外链ID": "beta.com", "平台域名": "beta.com", "基础状态": "候选", "提交入口": "https://beta.com"}]
+        res = validate_execution_start(project_row, master_rows)
+        self.assertFalse(res["eligible"])
+        self.assertEqual(res["proposed_status"], "失败")
+        self.assertIn("不匹配", res["reason"])
+        self.assertEqual(res["next_attempt_count"], 0)
+
+    def test_validate_execution_start_blank_or_unknown_master_status(self):
+        """P0-Gate: master 基础状态必须精确为候选；空值或未知值 fail closed"""
+        from execution_state import validate_execution_start
+
+        project_row = {"外链ID": "valid.com", "状态": "待提交", "尝试次数": "0"}
+
+        # 1. 基础状态为空
+        res_blank = validate_execution_start(project_row, [{
+            "外链ID": "valid.com", "平台域名": "valid.com", "基础状态": "", "提交入口": "https://valid.com"
+        }])
+        self.assertFalse(res_blank["eligible"])
+        self.assertEqual(res_blank["proposed_status"], "失败")
+        self.assertIn("缺少基础状态", res_blank["reason"])
+
+        # 2. 基础状态为未知非法值
+        res_unknown = validate_execution_start(project_row, [{
+            "外链ID": "valid.com", "平台域名": "valid.com", "基础状态": "未知状态", "提交入口": "https://valid.com"
+        }])
+        self.assertFalse(res_unknown["eligible"])
+        self.assertEqual(res_unknown["proposed_status"], "失败")
+        self.assertIn("非法或未处于候选状态", res_unknown["reason"])
+
+    def test_validate_execution_start_missing_canonical_platform_domain(self):
+        """P0-Gate: 缺少 canonical 平台域名必须 fail closed"""
+        from execution_state import validate_execution_start
+
+        project_row = {"外链ID": "valid.com", "状态": "待提交", "尝试次数": "0"}
+        res = validate_execution_start(project_row, [{
+            "外链ID": "valid.com", "平台域名": "  ", "基础状态": "候选", "提交入口": "https://valid.com/submit"
+        }])
+        self.assertFalse(res["eligible"])
+        self.assertEqual(res["proposed_status"], "失败")
+        self.assertIn("缺少平台域名", res["reason"])
+
+    def test_validate_execution_start_cross_domain_entry(self):
+        """P0-Gate: 提交入口必须与 master 平台域名 same-origin (支持合法子域名，拒绝跨域/欺骗后缀)"""
+        from execution_state import validate_execution_start
+
+        project_row = {"外链ID": "example.com", "状态": "待提交", "尝试次数": "0"}
+
+        # 跨域拦截
+        res_cross = validate_execution_start(project_row, [{
+            "外链ID": "example.com", "平台域名": "example.com", "基础状态": "候选", "提交入口": "https://attacker.com/submit"
+        }])
+        self.assertFalse(res_cross["eligible"])
+        self.assertEqual(res_cross["proposed_status"], "失败")
+        self.assertIn("不匹配", res_cross["reason"])
+
+        # 后缀钓鱼拦截
+        res_phish = validate_execution_start(project_row, [{
+            "外链ID": "example.com", "平台域名": "example.com", "基础状态": "候选", "提交入口": "https://example.com.evil.org/submit"
+        }])
+        self.assertFalse(res_phish["eligible"])
+        self.assertIn("不匹配", res_phish["reason"])
+
+        # 合法子域名放行
+        res_sub = validate_execution_start(project_row, [{
+            "外链ID": "example.com", "平台域名": "example.com", "基础状态": "候选", "提交入口": "https://auth.example.com/submit"
+        }])
+        self.assertTrue(res_sub["eligible"])
+
+    def test_validate_execution_start_terminal_project_status(self):
+        """P0-Gate: 正常启动时 project.状态 必须为 待提交；terminal 状态拒绝启动"""
+        from execution_state import validate_execution_start
+
+        master = [{"外链ID": "valid.com", "平台域名": "valid.com", "基础状态": "候选", "提交入口": "https://valid.com/submit"}]
+
+        for terminal in ("已上线", "审核中", "已提交", "已排期", "失败", "不适用"):
+            project_row = {"外链ID": "valid.com", "状态": terminal, "尝试次数": "2"}
+            res = validate_execution_start(project_row, master)
+            self.assertFalse(res["eligible"], f"Status {terminal} should not be eligible for normal start")
+            self.assertEqual(res["next_attempt_count"], 2)
+
+    def test_validate_execution_start_resume_same_attempt_semantics(self):
+        """P0-Gate: same-attempt resume 保持尝试次数不自增，且只允许需人工或中断处理中"""
+        from execution_state import validate_execution_start
+
+        master = [{"外链ID": "valid.com", "平台域名": "valid.com", "基础状态": "候选", "提交入口": "https://valid.com/submit"}]
+
+        # 1. 正常的需人工行恢复：尝试次数保持为 1，不自增
+        res_resume_human = validate_execution_start(
+            {"外链ID": "valid.com", "状态": "需人工", "尝试次数": "1", "原因/备注": "等待邮箱验证码"},
+            master,
+            resume_same_attempt=True,
+        )
+        self.assertTrue(res_resume_human["eligible"])
+        self.assertEqual(res_resume_human["current_attempt_count"], 1)
+        self.assertEqual(res_resume_human["next_attempt_count"], 1)
+        self.assertEqual(res_resume_human["project_mutation"]["尝试次数"], "1")
+
+        # 2. 中断的处理中行恢复：尝试次数保持为 2
+        res_resume_running = validate_execution_start(
+            {"外链ID": "valid.com", "状态": "处理中", "尝试次数": "2"},
+            master,
+            resume_same_attempt=True,
+        )
+        self.assertTrue(res_resume_running["eligible"])
+        self.assertEqual(res_resume_running["next_attempt_count"], 2)
+
+        # 3. 传入终态失败或待提交行使用 resume 模式：拒绝启动
+        res_bad_status = validate_execution_start(
+            {"外链ID": "valid.com", "状态": "待提交", "尝试次数": "0"},
+            master,
+            resume_same_attempt=True,
+        )
+        self.assertFalse(res_bad_status["eligible"])
+
+    def test_validate_execution_start_resume_forbidden_on_uncertain_submit(self):
+        """P0-Gate: 提交结果不确定风险严禁自动 resume，强制维持需人工"""
+        from execution_state import validate_execution_start
+
+        master = [{"外链ID": "valid.com", "平台域名": "valid.com", "基础状态": "候选", "提交入口": "https://valid.com/submit"}]
+
+        uncertain_notes = [
+            "已执行提交但结果不确定，避免重复提交",
+            "提交结果不明确，待人工核实",
+            "ambiguous post-submit state detected",
+            "避免重复提交，需要人工确认",
+        ]
+
+        for note in uncertain_notes:
+            project_row = {
+                "外链ID": "valid.com",
+                "状态": "需人工",
+                "尝试次数": "1",
+                "原因/备注": note,
+            }
+            res = validate_execution_start(project_row, master, resume_same_attempt=True)
+            self.assertFalse(res["eligible"], f"Should reject resume for note: {note}")
+            self.assertEqual(res["proposed_status"], "需人工")
+            self.assertEqual(res["next_attempt_count"], 1)
+            self.assertIn("提交结果不确定风险", res["reason"])
+
+    def test_cli_validate_execution_start_resume_flag(self):
+        """P0-Gate: browser_cli validate-execution-start 支持 --resume-same-attempt"""
+        import subprocess
+        import json
+
+        cli_path = scripts_dir / "browser_cli.py"
+        res = subprocess.run(
+            [
+                sys.executable,
+                str(cli_path),
+                "validate-execution-start",
+                "--resume-same-attempt",
+                "--project-row-json",
+                json.dumps({"项目ID": "p1", "外链ID": "good.com", "状态": "需人工", "尝试次数": "1", "原因/备注": "等待邮箱验证"}),
+                "--master-rows-json",
+                json.dumps([{
+                    "外链ID": "good.com",
+                    "平台域名": "good.com",
+                    "基础状态": "候选",
+                    "提交入口": "https://good.com/submit",
+                }]),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res.returncode, 0)
+        out = json.loads(res.stdout)
+        self.assertTrue(out["ok"])
+        self.assertTrue(out["eligible"])
+        self.assertEqual(out["current_attempt_count"], 1)
+        self.assertEqual(out["next_attempt_count"], 1)
+        self.assertEqual(out["project_mutation"]["尝试次数"], "1")
 
 
 class TestControlPlaneConfiguration(unittest.TestCase):

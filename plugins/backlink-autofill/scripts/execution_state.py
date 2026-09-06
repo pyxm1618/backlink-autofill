@@ -583,9 +583,15 @@ class ProductionSheetGate:
         project_row: dict[str, Any],
         master_rows: list[dict[str, Any]],
         now_iso: str | None = None,
+        resume_same_attempt: bool = False,
     ) -> dict[str, Any]:
         """Validate whether an execution attempt can start against production Google Sheet contract."""
-        return validate_execution_start(project_row, master_rows, now_iso)
+        return validate_execution_start(
+            project_row=project_row,
+            master_rows=master_rows,
+            now_iso=now_iso,
+            resume_same_attempt=resume_same_attempt,
+        )
 
 
 def enrich_master_facts(
@@ -657,63 +663,116 @@ def enrich_master_facts(
     return res
 
 
+def is_safe_subdomain_or_exact(host: str, domain: str) -> bool:
+    """Check if host is domain or a subdomain of domain strictly on DNS label boundaries."""
+    if not host or not domain:
+        return False
+    clean_host = host.lower().strip().split(":")[0].strip(".")
+    clean_domain = domain.lower().strip().split(":")[0].strip(".")
+    if clean_domain.startswith("www."):
+        clean_domain = clean_domain[4:]
+    if clean_host.startswith("www."):
+        clean_host = clean_host[4:]
+
+    if clean_host == clean_domain:
+        return True
+    return clean_host.endswith("." + clean_domain)
+
+
+def _evaluate_master_row_eligibility(
+    master_rows: list[dict[str, Any]],
+    project_backlink_id: str | None = None,
+) -> tuple[bool, str, str, str | None]:
+    """Shared internal core evaluating 外链总表 candidate eligibility.
+
+    Enforces:
+    1. Exactly one master row;
+    2. Join identity: master.外链ID == project.外链ID (if project_backlink_id provided);
+    3. Master 基础状态 must be exactly '候选'; empty/unknown/other values fail closed;
+    4. Domain identity: master.平台域名 must be non-empty;
+    5. Submission entry must be absolute http/https;
+    6. Same-origin submission entry: entry hostname must match master.平台域名 or its subdomain.
+
+    Returns:
+        (eligible: bool, status: str, reason: str, verified_entry_url: str | None)
+    """
+    if not isinstance(master_rows, list) or len(master_rows) == 0:
+        return False, "失败", "外链ID在外链总表中不存在", None
+
+    if len(master_rows) > 1:
+        return False, "失败", "外链ID在外链总表中不唯一", None
+
+    master_row = master_rows[0]
+    if not isinstance(master_row, dict):
+        return False, "失败", "外链ID在外链总表中不存在", None
+
+    # 1. Join identity check (if project_backlink_id provided)
+    if project_backlink_id is not None:
+        master_bid = str(master_row.get("外链ID") or "").strip()
+        if not master_bid or master_bid != project_backlink_id.strip():
+            return False, "失败", f"总表外链ID ({master_bid!r}) 与项目外链ID ({project_backlink_id.strip()!r}) 不匹配", None
+
+    # 2. Master 基础状态 check: 必须精确等于 "候选"
+    base_status = str(master_row.get("基础状态") or "").strip()
+    if base_status != "候选":
+        if base_status == "已排除":
+            exclude_reason = str(master_row.get("基础排除原因") or "").strip()
+            reason = f"外链总表基础状态为已排除：{exclude_reason}" if exclude_reason else "外链总表基础状态为已排除"
+            return False, "不适用", reason, None
+        elif base_status == "失效":
+            return False, "失败", "外链总表基础状态为失效", None
+        elif not base_status:
+            return False, "失败", "外链总表缺少基础状态", None
+        else:
+            return False, "失败", f"外链总表基础状态非法或未处于候选状态（当前为: {base_status!r}）", None
+
+    # 3. Domain identity check: 必须有 canonical 平台域名
+    platform_domain = str(master_row.get("平台域名") or "").strip()
+    if not platform_domain:
+        return False, "失败", "外链总表缺少平台域名", None
+
+    # 4. Entry URL check: 必须是绝对 http/https URL
+    entry_url = str(master_row.get("提交入口") or "").strip()
+    parsed_entry = urlparse(entry_url)
+    if not entry_url or parsed_entry.scheme not in ("http", "https") or not parsed_entry.netloc:
+        return False, "失败", "缺少有效提交入口", None
+
+    # 5. Same-origin submission entry check: 必须属于 master.平台域名 或其合法子域
+    entry_hostname = (parsed_entry.netloc or "").split(":")[0].lower()
+    if not is_safe_subdomain_or_exact(entry_hostname, platform_domain):
+        return False, "失败", f"提交入口域名 ({entry_hostname}) 与外链主平台域名 ({platform_domain}) 不匹配", None
+
+    return True, "待提交", "", entry_url
+
+
 def check_master_execution_eligibility(
     master_row: dict[str, Any] | None,
     master_candidates_count: int = 1,
 ) -> dict[str, Any]:
     """Verify if a candidate row from 外链总表 is eligible for project queue execution.
 
-    Master Execution Gate:
-    1. Master row missing -> 状态: 失败, 原因: 外链ID在外链总表中不存在
-    2. Duplicate master rows -> 状态: 失败, 原因: 外链ID在外链总表中不唯一
-    3. Master 基础状态 == 已排除 -> 状态: 不适用, 原因: 外链总表基础状态为已排除：<基础排除原因>
-    4. Master 基础状态 == 失效 -> 状态: 失败, 原因: 外链总表基础状态为失效
-    5. Master 缺少提交入口 -> 状态: 失败, 原因: 缺少有效提交入口
-    6. Eligible -> 状态: 待提交, eligible: True
+    Delegates directly to the shared _evaluate_master_row_eligibility core.
     """
     if master_candidates_count > 1:
-        return {
-            "eligible": False,
-            "status": "失败",
-            "reason": "外链ID在外链总表中不唯一",
-        }
+        master_rows = [master_row, master_row]
+    elif master_row is not None:
+        master_rows = [master_row]
+    else:
+        master_rows = []
 
-    if not master_row or not isinstance(master_row, dict):
-        return {
-            "eligible": False,
-            "status": "失败",
-            "reason": "外链ID在外链总表中不存在",
-        }
+    # 为了兼容旧单元测试中仅传 master_row 的场景，如果 master_row 缺少平台域名，以 master.外链ID 或 entry host 作为 fallback
+    if master_row and not master_row.get("平台域名"):
+        fallback_domain = master_row.get("外链ID") or urlparse(str(master_row.get("提交入口") or "")).netloc
+        if fallback_domain:
+            master_row = dict(master_row)
+            master_row["平台域名"] = fallback_domain
+            master_rows = [master_row] if master_candidates_count == 1 else [master_row, master_row]
 
-    base_status = str(master_row.get("基础状态") or "").strip()
-    if base_status == "已排除":
-        exclude_reason = str(master_row.get("基础排除原因") or "").strip()
-        reason = f"外链总表基础状态为已排除：{exclude_reason}" if exclude_reason else "外链总表基础状态为已排除"
-        return {
-            "eligible": False,
-            "status": "不适用",
-            "reason": reason,
-        }
-
-    if base_status == "失效":
-        return {
-            "eligible": False,
-            "status": "失败",
-            "reason": "外链总表基础状态为失效",
-        }
-
-    entry_url = str(master_row.get("提交入口") or "").strip()
-    if not entry_url:
-        return {
-            "eligible": False,
-            "status": "失败",
-            "reason": "缺少有效提交入口",
-        }
-
+    eligible, status, reason, entry_url = _evaluate_master_row_eligibility(master_rows)
     return {
-        "eligible": True,
-        "status": "待提交",
-        "reason": "",
+        "eligible": eligible,
+        "status": status,
+        "reason": reason,
         "entry_url": entry_url,
     }
 
@@ -722,24 +781,20 @@ def validate_execution_start(
     project_row: dict[str, Any],
     master_rows: list[dict[str, Any]],
     now_iso: str | None = None,
+    resume_same_attempt: bool = False,
 ) -> dict[str, Any]:
     """Validate whether an execution attempt can start against production Google Sheet contract.
 
     Invariants:
     1. Attempt count (尝试次数) strictly reflects actual browser execution attempts.
-       If master row is missing, duplicate, excluded, invalid, or lacks a valid entry URL,
+       If master row is missing, duplicate, excluded, invalid, cross-domain, or lacks a valid entry URL,
        execution NEVER starts, browser NEVER launches, and attempt count is NEVER incremented.
-    2. Master row status check:
-       - len(master_rows) == 0: 状态: 失败, 尝试次数不变
-       - len(master_rows) > 1: 状态: 失败, 尝试次数不变
-       - 基础状态 == 已排除: 状态: 不适用, 尝试次数不变
-       - 基础状态 == 失效: 状态: 失败, 尝试次数不变
-       - 缺少有效提交入口 (empty or non-http/https): 状态: 失败, 尝试次数不变
-    3. If all gates pass:
-       - eligible: True
-       - 状态: 处理中
-       - 尝试次数: 原值 + 1
-       - verified_entry_url: master_row['提交入口']
+    2. Join identity: project.外链ID must be non-empty and exactly equal master.外链ID.
+    3. Domain identity: submission-entry must be same-origin with canonical master.平台域名.
+    4. Project Status & Resume Semantics:
+       - Normal start (resume_same_attempt=False): project.状态 must be '待提交', attempts +1.
+       - Same-attempt resume (resume_same_attempt=True): requires proven-unsubmitted '需人工' or
+         interrupted '处理中'; attempts remain UNCHANGED. Forbidden if submit outcome was uncertain.
     """
     if not isinstance(project_row, dict):
         raise ValueError("project_row must be a dictionary")
@@ -753,9 +808,12 @@ def validate_execution_start(
         current_attempt_count = 0
 
     target_url = str(project_row.get("目标URL") or "").strip()
+    project_backlink_id = str(project_row.get("外链ID") or "").strip()
+    current_status = str(project_row.get("状态") or "").strip()
 
-    if len(master_rows) == 0:
-        reason = "外链ID在外链总表中不存在"
+    # 1. Project 外链ID 非空防守
+    if not project_backlink_id:
+        reason = "项目行缺少外链ID"
         mutation = build_project_row_update(
             status="失败",
             reason=reason,
@@ -775,12 +833,17 @@ def validate_execution_start(
             "project_mutation": mutation,
         }
 
-    if len(master_rows) > 1:
-        reason = f"外链ID在外链总表中不唯一（找到 {len(master_rows)} 条记录）"
+    # 2. 调用统一内部核心校验 Master Row
+    eligible, master_status, master_reason, verified_entry_url = _evaluate_master_row_eligibility(
+        master_rows=master_rows,
+        project_backlink_id=project_backlink_id,
+    )
+
+    if not eligible:
         mutation = build_project_row_update(
-            status="失败",
-            reason=reason,
-            evidence_summary=f"[{reason}]",
+            status=master_status,
+            reason=master_reason,
+            evidence_summary=f"[{master_reason}]",
             target_url=target_url,
             attempt_count=current_attempt_count,
             now_iso=now_iso,
@@ -788,85 +851,90 @@ def validate_execution_start(
         return {
             "ok": True,
             "eligible": False,
-            "reason": reason,
+            "reason": master_reason,
             "current_attempt_count": current_attempt_count,
             "next_attempt_count": current_attempt_count,
-            "proposed_status": "失败",
+            "proposed_status": master_status,
             "verified_entry_url": None,
             "project_mutation": mutation,
         }
 
-    master_row = master_rows[0]
-    base_status = str(master_row.get("基础状态") or "").strip()
+    # 3. Project 状态与 resume_same_attempt 语义判定
+    if not resume_same_attempt:
+        # Normal Start: 要求严格为 '待提交' (或初始未置状态)
+        if current_status and current_status != "待提交":
+            reason = f"项目当前状态为 {current_status!r}，非待提交状态不可启动新执行"
+            mutation = build_project_row_update(
+                status=current_status if current_status in SHEET_TO_INTERNAL else "失败",
+                reason=reason,
+                evidence_summary=f"[{reason}]",
+                target_url=target_url,
+                attempt_count=current_attempt_count,
+                now_iso=now_iso,
+            )
+            return {
+                "ok": True,
+                "eligible": False,
+                "reason": reason,
+                "current_attempt_count": current_attempt_count,
+                "next_attempt_count": current_attempt_count,
+                "proposed_status": current_status if current_status in SHEET_TO_INTERNAL else "失败",
+                "verified_entry_url": None,
+                "project_mutation": mutation,
+            }
+    else:
+        # Same-attempt Resume: 仅允许已确认未提交的 '需人工' 或中断态
+        if current_status not in ("需人工", "处理中"):
+            reason = f"显式恢复模式仅允许恢复 需人工 或 中断处理中 状态（当前状态为: {current_status!r}）"
+            mutation = build_project_row_update(
+                status=current_status if current_status in SHEET_TO_INTERNAL else "失败",
+                reason=reason,
+                evidence_summary=f"[{reason}]",
+                target_url=target_url,
+                attempt_count=current_attempt_count,
+                now_iso=now_iso,
+            )
+            return {
+                "ok": True,
+                "eligible": False,
+                "reason": reason,
+                "current_attempt_count": current_attempt_count,
+                "next_attempt_count": current_attempt_count,
+                "proposed_status": current_status if current_status in SHEET_TO_INTERNAL else "失败",
+                "verified_entry_url": None,
+                "project_mutation": mutation,
+            }
 
-    if base_status == "已排除":
-        exclude_reason = str(master_row.get("基础排除原因") or "").strip()
-        reason = f"外链总表基础状态为已排除：{exclude_reason}" if exclude_reason else "外链总表基础状态为已排除"
-        mutation = build_project_row_update(
-            status="不适用",
-            reason=reason,
-            evidence_summary=f"[{reason}]",
-            target_url=target_url,
-            attempt_count=current_attempt_count,
-            now_iso=now_iso,
-        )
-        return {
-            "ok": True,
-            "eligible": False,
-            "reason": reason,
-            "current_attempt_count": current_attempt_count,
-            "next_attempt_count": current_attempt_count,
-            "proposed_status": "不适用",
-            "verified_entry_url": None,
-            "project_mutation": mutation,
-        }
+        # 检查是否包含提交结果不确定风险，禁止自动恢复避免重复提交
+        combined_notes = f"{project_row.get('原因/备注') or ''} {project_row.get('证据摘要') or ''}".lower()
+        uncertain_cues = ("提交结果不确定", "结果不明确", "避免重复提交", "uncertain submit", "ambiguous post-submit")
+        if any(cue in combined_notes for cue in uncertain_cues):
+            reason = "检测到提交结果不确定风险，禁止自动恢复以避免重复提交，须人工终审"
+            mutation = build_project_row_update(
+                status="需人工",
+                reason=reason,
+                evidence_summary=str(project_row.get("证据摘要") or ""),
+                target_url=target_url,
+                attempt_count=current_attempt_count,
+                now_iso=now_iso,
+            )
+            return {
+                "ok": True,
+                "eligible": False,
+                "reason": reason,
+                "current_attempt_count": current_attempt_count,
+                "next_attempt_count": current_attempt_count,
+                "proposed_status": "需人工",
+                "verified_entry_url": None,
+                "project_mutation": mutation,
+            }
 
-    if base_status == "失效":
-        reason = "外链总表基础状态为失效"
-        mutation = build_project_row_update(
-            status="失败",
-            reason=reason,
-            evidence_summary=f"[{reason}]",
-            target_url=target_url,
-            attempt_count=current_attempt_count,
-            now_iso=now_iso,
-        )
-        return {
-            "ok": True,
-            "eligible": False,
-            "reason": reason,
-            "current_attempt_count": current_attempt_count,
-            "next_attempt_count": current_attempt_count,
-            "proposed_status": "失败",
-            "verified_entry_url": None,
-            "project_mutation": mutation,
-        }
+    # 4. 全部通过：计算尝试次数并生成变更
+    if resume_same_attempt:
+        next_attempt_count = current_attempt_count  # 恢复同一次未提交尝试，尝试次数保持不变！
+    else:
+        next_attempt_count = current_attempt_count + 1  # 正常启动，尝试次数严格 +1！
 
-    entry_url = str(master_row.get("提交入口") or "").strip()
-    parsed_entry = urlparse(entry_url)
-    if not entry_url or parsed_entry.scheme not in ("http", "https") or not parsed_entry.netloc:
-        reason = "缺少有效提交入口"
-        mutation = build_project_row_update(
-            status="失败",
-            reason=reason,
-            evidence_summary=f"[{reason}]",
-            target_url=target_url,
-            attempt_count=current_attempt_count,
-            now_iso=now_iso,
-        )
-        return {
-            "ok": True,
-            "eligible": False,
-            "reason": reason,
-            "current_attempt_count": current_attempt_count,
-            "next_attempt_count": current_attempt_count,
-            "proposed_status": "失败",
-            "verified_entry_url": None,
-            "project_mutation": mutation,
-        }
-
-    # All gates passed: eligible to start execution attempt
-    next_attempt_count = current_attempt_count + 1
     mutation = build_project_row_update(
         status="处理中",
         target_url=target_url,
@@ -880,7 +948,7 @@ def validate_execution_start(
         "current_attempt_count": current_attempt_count,
         "next_attempt_count": next_attempt_count,
         "proposed_status": "处理中",
-        "verified_entry_url": entry_url,
+        "verified_entry_url": verified_entry_url,
         "project_mutation": mutation,
     }
 
