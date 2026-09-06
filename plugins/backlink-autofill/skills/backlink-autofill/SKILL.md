@@ -117,32 +117,34 @@ Before taking new `待提交` rows, inspect selected-project `处理中` rows an
 
 ## Per-row execution loop
 
-### 1. Re-read and lock the exact row
+### 1. Read row, resolve platform row, and enforce Master Execution Gate (Preflight)
 
-Immediately before new execution:
+Immediately before any attempt increment or browser launch:
 
-1. re-read the exact original row;
-2. confirm `项目ID` still equals selected project;
-3. confirm status is still eligible for this action (`待提交`, or an explicitly resumed known-safe `需人工` row);
-4. for a new `待提交` attempt set `状态 = 处理中`, increment `尝试次数`, and set `最近操作时间`;
-5. for continuation of the same proven-unsubmitted attempt, set `状态 = 处理中` without incrementing the attempt count;
-6. **Re-read the exact row after every Sheet mutation** and verify intended values.
+1. Re-read the exact original row from `外链管理`;
+2. Confirm `项目ID` still equals selected project;
+3. Confirm status is eligible for this action (`待提交`, or an explicitly resumed known-safe `需人工` row);
+4. Join by `外链ID` to `外链总表` candidates, and enforce the mandatory production gate:
+   ```bash
+   python3 -m browser_cli validate-execution-start \
+     --project-row-json '{"外链ID": "...", "项目ID": "...", "尝试次数": "0", "目标URL": "..."}' \
+     --master-rows-json '[{"外链ID": "...", "基础状态": "候选", "提交入口": "https://..."}]'
+   ```
+5. **If ineligible (`eligible == false`)**:
+   - Master missing → `状态 = 失败`, `原因 = 外链ID在外链总表中不存在`;
+   - Master duplicate → `状态 = 失败`, `原因 = 外链ID在外链总表中不唯一`;
+   - Master `基础状态 == 已排除` → `状态 = 不适用`, `原因 = 外链总表基础状态为已排除：<基础排除原因>`;
+   - Master `基础状态 == 失效` → `状态 = 失败`, `原因 = 外链总表基础状态为失效`;
+   - Missing/invalid entry URL → `状态 = 失败`, `原因 = 缺少有效提交入口`.
+   - **CRITICAL CONTRACT**: In all ineligible cases, write back terminal state immediately, **DO NOT increment `尝试次数`** (it strictly tracks browser attempts), and **DO NOT launch browser**.
+   - Do not silently web-search a replacement URL for a data-integrity failure.
+6. **If eligible (`eligible == true`)**:
+   - Only now set `状态 = 处理中`, **increment `尝试次数` by 1** (`next_attempt_count`), and set `最近操作时间`;
+   - For an explicitly resumed proven-unsubmitted continuation, set `状态 = 处理中` without incrementing the attempt count;
+   - **Re-read the exact row after every Sheet mutation** and verify intended values;
+   - Create/update project+row checkpoint before website mutation. Checkpoints contain only safe state, never credentials.
 
-Create/update a project+row checkpoint before website mutation. Checkpoints contain only safe state, never credentials.
-
-### 2. Resolve platform row and enforce Master Execution Gate
-
-Join by `外链ID` to exactly one row in `外链总表`; enforce Master Execution Gate before browser launch:
-
-- no exact master row → `失败`, `外链ID在外链总表中不存在`;
-- duplicate exact master rows → `失败`, `外链ID在外链总表中不唯一`;
-- master `基础状态 == 已排除` → `不适用`, `外链总表基础状态为已排除：<基础排除原因>` (安全退出，禁止启动浏览器提交);
-- master `基础状态 == 失效` → `失败`, `外链总表基础状态为失效` (安全退出，禁止启动浏览器提交);
-- invalid/missing submit URL → `失败`, `缺少有效提交入口`.
-
-Do not silently web-search a replacement URL for a data-integrity failure.
-
-### 3. Load only approved project data
+### 2. Load only approved project data
 
 Load:
 
@@ -154,7 +156,7 @@ Load:
 
 If `目标URL` is blank, use the selected project's canonical URL only when unambiguous. Never invent features, AI claims, pricing, metrics, awards, integrations, company claims, reviews, or partnerships.
 
-### 4. Recipe first, compact inspection second
+### 3. Recipe first, compact inspection second
 
 Use `~/.backlink-autofill/recipes/<domain>.json` when a verified stable recipe exists. Recipes contain selectors/navigation/success indicators, never credentials or project copy.
 
@@ -166,7 +168,7 @@ If missing/stale, inspect the real page with the browser runtime's compact inter
 
 Do not use screenshots/full-page dumps when compact DOM/form state is sufficient.
 
-### 5. Discover platform facts by execution
+### 4. Discover platform facts by execution
 
 Do not pre-research DR/DA, Follow status, login method, price, AI-only status, or review time when the live flow can reveal them.
 
@@ -186,7 +188,7 @@ Fast handling:
 - mandatory project-site modification/reciprocal badge → `需人工`;
 - clearly dead submission page → `失败`; master may become `失效` with evidence.
 
-### 6. Login and credential behavior
+### 5. Login and credential behavior
 
 Default to the persistent CDP Chrome session (`http://127.0.0.1:9222`, or `BACKLINK_BROWSER_CDP_URL`) using existing `browser.contexts[0]`.
 
@@ -212,7 +214,7 @@ Login priority for each platform:
    - **Email verification (OTP & Magic Link)**: Default to automated resolution via host mail capability (Codex Gmail connected app or Google Antigravity Gmail MCP). Email OTP and platform registration confirmation/Magic Links are automated first. Only genuine unresolved email verifications (mail capability unavailable, no matching email, multiple ambiguous emails, protected-auth email, verification link fails safety check, or fill failure) fall back to `需人工`.
    - **True Human-only blockers (CAPTCHA, 2FA, passkey, SMS, payment)**: Enter `需人工`, retain the browser tab, persist `human_pending` record, and **continue the batch immediately without stopping**.
 
-### 7. Build and execute an explicit action plan
+### 6. Build and execute an explicit action plan
 
 Allowed ordinary actions:
 
@@ -230,7 +232,7 @@ Uploads must stay inside the selected project's private asset root. Derived imag
 
 **Read the form back after filling.** Verify ordinary field values, uploaded filename, and credential-fill success without exposing secret values.
 
-### 7a. Existing Submission Preflight (Duplicate Prevention Invariant)
+### 6a. Existing Submission Preflight (Duplicate Prevention Invariant)
 
 **Existing project/submission preflight MUST run before any irreversible Final Submit.**
 
@@ -248,7 +250,7 @@ Once authenticated into the account, inspect the dashboard / my products / listi
    - **`UNKNOWN`**: Listings structure ambiguous, page unconfirmed, or unable to conclusively verify.
      - **Never guess**. Halt safely before irreversible Final Submit and mark `需人工` with reason `"已有提交状态不明确，暂停避免重复提交"`.
 
-### 8. Final submit policy
+### 7. Final submit policy
 
 **Final submit may be automatic** when all are true:
 
@@ -261,7 +263,7 @@ Once authenticated into the account, inspect the dashboard / my products / listi
 
 Do not stop merely because the button is named Submit/Publish/Launch/Post/Create Listing/Send for Review. Do not autonomously make payments or accept unusual commitments.
 
-### 9. Human handoff and non-blocking batch execution
+### 8. Human handoff and non-blocking batch execution
 
 Core rule: **`NEEDS_HUMAN` pauses only the current row; it NEVER stops the batch.**
 
@@ -276,7 +278,7 @@ When encountering an unresolved email verification blocker, CAPTCHA, 2FA, passke
 
 Never pause or abort the batch because one task requires human intervention. Multiple `HUMAN_PENDING` tabs may coexist simultaneously without conflict.
 
-### 9a. Human pending resume protocol
+### 8a. Human pending resume protocol
 
 When the user completes the human step in the visible Chrome window and asks to resume (e.g. "FoundrList verification done"):
 
@@ -293,7 +295,7 @@ When the user completes the human step in the visible Chrome window and asks to 
    - **Do NOT delete the pending record**;
    - Retain `需人工` status and inform the user.
 
-### 9b. Automated Email Verification (OTP & Magic Link) via host mail capability
+### 8b. Automated Email Verification (OTP & Magic Link) via host mail capability
 
 When the browser runtime halts on an `EMAIL_OTP` or platform email verification / confirmation screen, the Agent attempts automated, secure resolution if host mail capability is active:
 
@@ -318,7 +320,7 @@ When the browser runtime halts on an `EMAIL_OTP` or platform email verification 
 5. **Seamless Continuation**:
    - Upon successful verification, the browser moves directly to the next onboarding/submission step without re-registering and without entering `需人工`.
 
-### 10. Classify outcome from evidence
+### 9. Classify outcome from evidence
 
 Classify status strictly according to the strongest verifiable browser evidence (Invariant 4):
 
@@ -334,7 +336,7 @@ If final Submit was clicked but outcome is ambiguous, use `需人工` with `已�
 
 `证据摘要` must be short, factual, and capture observable state.
 
-### 11. Update exact project row
+### 10. Update exact project row
 
 Before writing to `外链管理`, pass the payload and browser evidence through the production gate:
 ```bash
@@ -351,7 +353,7 @@ The validator strictly enforces:
 
 **Always re-read the exact row immediately after every Sheet mutation** and verify values. Never mutate another project's row.
 
-### 12. Enrich master facts from direct observation only
+### 11. Enrich master facts from direct observation only
 
 Before updating `外链总表`, pass facts and browser evidence through the production gate:
 ```bash
@@ -371,11 +373,11 @@ The validator strictly enforces direct observations only (Invariant 1 & 6):
 
 Prior research, discovery provenance (e.g. `BacklinkOS/已确认免费Follow`), and historical notes must NEVER populate `实测*` fields. Unknown facts remain blank; never guess. Project-specific status or result URL must never leak to other projects.
 
-### 13. Save/refresh domain recipe
+### 12. Save/refresh domain recipe
 
 After a verified stable flow, save selectors/navigation/success indicators. Never store password/token/secret/session credential, generated password, or project-specific copy inside a recipe.
 
-### 14. Finish or continue
+### 13. Finish or continue
 
 Delete completed-row checkpoints once the row reaches a non-ambiguous terminal state. Terminal task tabs are automatically closed upon completion and Sheet read-back; only genuine `HUMAN_PENDING` tasks retain their tabs in the persistent browser. Keep checkpoint and durable `human_pending` record for `需人工`/ambiguous interrupted work.
 

@@ -578,6 +578,15 @@ class ProductionSheetGate:
 
         return dict(proposed)
 
+    @staticmethod
+    def validate_execution_start(
+        project_row: dict[str, Any],
+        master_rows: list[dict[str, Any]],
+        now_iso: str | None = None,
+    ) -> dict[str, Any]:
+        """Validate whether an execution attempt can start against production Google Sheet contract."""
+        return validate_execution_start(project_row, master_rows, now_iso)
+
 
 def enrich_master_facts(
     prior_facts: dict[str, Any] | None,
@@ -706,6 +715,173 @@ def check_master_execution_eligibility(
         "status": "待提交",
         "reason": "",
         "entry_url": entry_url,
+    }
+
+
+def validate_execution_start(
+    project_row: dict[str, Any],
+    master_rows: list[dict[str, Any]],
+    now_iso: str | None = None,
+) -> dict[str, Any]:
+    """Validate whether an execution attempt can start against production Google Sheet contract.
+
+    Invariants:
+    1. Attempt count (尝试次数) strictly reflects actual browser execution attempts.
+       If master row is missing, duplicate, excluded, invalid, or lacks a valid entry URL,
+       execution NEVER starts, browser NEVER launches, and attempt count is NEVER incremented.
+    2. Master row status check:
+       - len(master_rows) == 0: 状态: 失败, 尝试次数不变
+       - len(master_rows) > 1: 状态: 失败, 尝试次数不变
+       - 基础状态 == 已排除: 状态: 不适用, 尝试次数不变
+       - 基础状态 == 失效: 状态: 失败, 尝试次数不变
+       - 缺少有效提交入口 (empty or non-http/https): 状态: 失败, 尝试次数不变
+    3. If all gates pass:
+       - eligible: True
+       - 状态: 处理中
+       - 尝试次数: 原值 + 1
+       - verified_entry_url: master_row['提交入口']
+    """
+    if not isinstance(project_row, dict):
+        raise ValueError("project_row must be a dictionary")
+    if not isinstance(master_rows, list):
+        raise ValueError("master_rows must be a list of dictionaries")
+
+    raw_attempt = project_row.get("尝试次数")
+    try:
+        current_attempt_count = int(raw_attempt) if raw_attempt is not None and str(raw_attempt).strip() != "" else 0
+    except (ValueError, TypeError):
+        current_attempt_count = 0
+
+    target_url = str(project_row.get("目标URL") or "").strip()
+
+    if len(master_rows) == 0:
+        reason = "外链ID在外链总表中不存在"
+        mutation = build_project_row_update(
+            status="失败",
+            reason=reason,
+            evidence_summary=f"[{reason}]",
+            target_url=target_url,
+            attempt_count=current_attempt_count,
+            now_iso=now_iso,
+        )
+        return {
+            "ok": True,
+            "eligible": False,
+            "reason": reason,
+            "current_attempt_count": current_attempt_count,
+            "next_attempt_count": current_attempt_count,
+            "proposed_status": "失败",
+            "verified_entry_url": None,
+            "project_mutation": mutation,
+        }
+
+    if len(master_rows) > 1:
+        reason = f"外链ID在外链总表中不唯一（找到 {len(master_rows)} 条记录）"
+        mutation = build_project_row_update(
+            status="失败",
+            reason=reason,
+            evidence_summary=f"[{reason}]",
+            target_url=target_url,
+            attempt_count=current_attempt_count,
+            now_iso=now_iso,
+        )
+        return {
+            "ok": True,
+            "eligible": False,
+            "reason": reason,
+            "current_attempt_count": current_attempt_count,
+            "next_attempt_count": current_attempt_count,
+            "proposed_status": "失败",
+            "verified_entry_url": None,
+            "project_mutation": mutation,
+        }
+
+    master_row = master_rows[0]
+    base_status = str(master_row.get("基础状态") or "").strip()
+
+    if base_status == "已排除":
+        exclude_reason = str(master_row.get("基础排除原因") or "").strip()
+        reason = f"外链总表基础状态为已排除：{exclude_reason}" if exclude_reason else "外链总表基础状态为已排除"
+        mutation = build_project_row_update(
+            status="不适用",
+            reason=reason,
+            evidence_summary=f"[{reason}]",
+            target_url=target_url,
+            attempt_count=current_attempt_count,
+            now_iso=now_iso,
+        )
+        return {
+            "ok": True,
+            "eligible": False,
+            "reason": reason,
+            "current_attempt_count": current_attempt_count,
+            "next_attempt_count": current_attempt_count,
+            "proposed_status": "不适用",
+            "verified_entry_url": None,
+            "project_mutation": mutation,
+        }
+
+    if base_status == "失效":
+        reason = "外链总表基础状态为失效"
+        mutation = build_project_row_update(
+            status="失败",
+            reason=reason,
+            evidence_summary=f"[{reason}]",
+            target_url=target_url,
+            attempt_count=current_attempt_count,
+            now_iso=now_iso,
+        )
+        return {
+            "ok": True,
+            "eligible": False,
+            "reason": reason,
+            "current_attempt_count": current_attempt_count,
+            "next_attempt_count": current_attempt_count,
+            "proposed_status": "失败",
+            "verified_entry_url": None,
+            "project_mutation": mutation,
+        }
+
+    entry_url = str(master_row.get("提交入口") or "").strip()
+    parsed_entry = urlparse(entry_url)
+    if not entry_url or parsed_entry.scheme not in ("http", "https") or not parsed_entry.netloc:
+        reason = "缺少有效提交入口"
+        mutation = build_project_row_update(
+            status="失败",
+            reason=reason,
+            evidence_summary=f"[{reason}]",
+            target_url=target_url,
+            attempt_count=current_attempt_count,
+            now_iso=now_iso,
+        )
+        return {
+            "ok": True,
+            "eligible": False,
+            "reason": reason,
+            "current_attempt_count": current_attempt_count,
+            "next_attempt_count": current_attempt_count,
+            "proposed_status": "失败",
+            "verified_entry_url": None,
+            "project_mutation": mutation,
+        }
+
+    # All gates passed: eligible to start execution attempt
+    next_attempt_count = current_attempt_count + 1
+    mutation = build_project_row_update(
+        status="处理中",
+        target_url=target_url,
+        attempt_count=next_attempt_count,
+        now_iso=now_iso,
+    )
+    return {
+        "ok": True,
+        "eligible": True,
+        "reason": "",
+        "current_attempt_count": current_attempt_count,
+        "next_attempt_count": next_attempt_count,
+        "proposed_status": "处理中",
+        "verified_entry_url": entry_url,
+        "project_mutation": mutation,
     }
 
 

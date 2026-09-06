@@ -268,6 +268,55 @@ def _extract_otp_code(text: str, length: int | None, kind: str) -> str | None:
     return None
 
 
+def is_safe_subdomain_or_exact(host: str, domain: str) -> bool:
+    """Check if host is domain or a subdomain of domain strictly on DNS label boundaries.
+
+    Ensures that foundrlist.com.evil.example does NOT match foundrlist.com.
+    """
+    if not host or not domain:
+        return False
+    clean_host = host.lower().strip().split(":")[0].strip(".")
+    clean_domain = domain.lower().strip().split(":")[0].strip(".")
+    if clean_domain.startswith("www."):
+        clean_domain = clean_domain[4:]
+    if clean_host.startswith("www."):
+        clean_host = clean_host[4:]
+
+    if clean_host == clean_domain:
+        return True
+    return clean_host.endswith("." + clean_domain)
+
+
+def is_allowed_initial_magic_link_host(host: str, platform_domain: str) -> bool:
+    """Validate whether an initial Magic Link host is permitted before browser navigation.
+
+    Permitted:
+    - Platform domain or its exact subdomains (e.g. auth.foundrlist.com, foundrlist.com).
+    - Approved ESP click domains or their subdomains (e.g. click.postmarkapp.com, link.mailgun.org).
+    Strictly forbidden:
+    - Protected third-party IdP domains (Google, GitHub, Apple, Microsoft, Auth0, etc.).
+    - Label-mismatched suffix tricks (e.g. foundrlist.com.evil.example, postmarkapp.com.attacker.com).
+    """
+    if not host or not platform_domain:
+        return False
+
+    clean_host = host.lower().strip().split(":")[0].strip(".")
+
+    # 1. Reject any host matching protected IdP
+    if any(is_safe_subdomain_or_exact(clean_host, idp) for idp in _PROTECTED_IDP_DOMAINS):
+        return False
+
+    # 2. Allow target platform or its subdomains
+    if is_safe_subdomain_or_exact(clean_host, platform_domain):
+        return True
+
+    # 3. Allow approved ESP domains or their subdomains
+    if any(is_safe_subdomain_or_exact(clean_host, esp) for esp in _ESP_CLICK_DOMAINS):
+        return True
+
+    return False
+
+
 def _extract_verification_link(text: str, platform_domain: str) -> str | None:
     """Extract a platform verification / magic link from email text.
     
@@ -275,6 +324,7 @@ def _extract_verification_link(text: str, platform_domain: str) -> str | None:
     - Strictly excludes links pointing to protected third-party IdPs.
     - Strictly excludes password reset or payment/billing links.
     - Supports target platform domain, platform subdomains, and trusted ESP redirect hosts.
+    - Strictly enforces DNS label boundary matching (no weak substring containment).
     """
     urls = re.findall(r"https?://[^\s<>\"')]+", text)
     if not urls:
@@ -294,7 +344,7 @@ def _extract_verification_link(text: str, platform_domain: str) -> str | None:
         netloc = (parsed.netloc or "").split(":")[0]
 
         # 1. 严格排除受保护第三方 IdP
-        if any(idp in netloc for idp in _PROTECTED_IDP_DOMAINS):
+        if any(is_safe_subdomain_or_exact(netloc, idp) for idp in _PROTECTED_IDP_DOMAINS):
             continue
 
         # 2. 严格排除密码重置或支付链接
@@ -302,8 +352,8 @@ def _extract_verification_link(text: str, platform_domain: str) -> str | None:
             continue
 
         has_cue = any(cue in url_lower for cue in link_cues)
-        is_platform_host = clean_platform in netloc or netloc.endswith(f".{clean_platform}")
-        is_esp_host = any(esp in netloc for esp in _ESP_CLICK_DOMAINS)
+        is_platform_host = is_safe_subdomain_or_exact(netloc, clean_platform)
+        is_esp_host = any(is_safe_subdomain_or_exact(netloc, esp) for esp in _ESP_CLICK_DOMAINS)
 
         if is_platform_host and has_cue:
             candidates.append((3, url))
@@ -333,15 +383,15 @@ def validate_magic_link_closure(final_url: str, platform_domain: str) -> bool:
     netloc = (parsed.netloc or "").split(":")[0]
 
     # 1. 严禁落入受保护第三方 IdP 登录或验证流程
-    if any(idp in netloc for idp in _PROTECTED_IDP_DOMAINS):
+    if any(is_safe_subdomain_or_exact(netloc, idp) for idp in _PROTECTED_IDP_DOMAINS):
         return False
 
     clean_platform = platform_domain.lower().strip()
     if clean_platform.startswith("www."):
         clean_platform = clean_platform[4:]
 
-    # 2. 最终目的地必须属于目标平台或其子域
-    if netloc == clean_platform or netloc.endswith(f".{clean_platform}"):
+    # 2. 最终目的地必须属于目标平台或其子域（严格边界匹配）
+    if is_safe_subdomain_or_exact(netloc, clean_platform):
         return True
 
     return False

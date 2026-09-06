@@ -33,6 +33,8 @@ jobs:
         run: python3 plugins/backlink-autofill/tests/test_tab_isolation.py -v
       - name: Test headed human handoff
         run: xvfb-run -a python3 plugins/backlink-autofill/tests/test_browser_handoff.py -v
+      - name: Run full backlink-autofill unit test suite
+        run: xvfb-run -a python3 -m unittest discover -s plugins/backlink-autofill/tests -p 'test_*.py' -v
       - name: Test personal installer and shared control plane in isolated HOME
         run: |
           export HOME="$RUNNER_TEMP/test-home"
@@ -94,7 +96,7 @@ jobs:
               'schema_version': 1,
               'spreadsheet_id': 'TEST_SHEET_ID',
               'master_sheet': '外链总表',
-              'project_sheet': '项目外链管理',
+              'project_sheet': '外链管理',
               'default_batch_size': 100,
           }, control_payload
 
@@ -122,7 +124,7 @@ jobs:
           control_payload = json.loads((root / 'control-plane.json').read_text())
           assert control_payload['spreadsheet_id'] == 'TEST_SHEET_ID', control_payload
           assert control_payload['master_sheet'] == '外链总表', control_payload
-          assert control_payload['project_sheet'] == '项目外链管理', control_payload
+          assert control_payload['project_sheet'] == '外链管理', control_payload
           assert control_payload['default_batch_size'] == 100, control_payload
           print('shared profile, control plane, credentials, runtime dirs, and sibling project preservation passed')
           PY

@@ -887,11 +887,12 @@ class BrowserRuntime:
         """Navigate to verified email Magic Link and confirm platform identity closure.
 
         Security guarantees:
-        - Never echoes the tokenized URL in return value or unredacted log.
+        - Never echoes the tokenized URL in return value, logs, or exceptions.
+        - Enforces initial DNS boundary check before navigating: host must be platform domain or approved ESP.
         - Enforces two-layer safety: verifies closure does not land on protected primary IdP.
         - Confirms final landed page belongs to platform domain.
         """
-        from email_otp_resolver import validate_magic_link_closure
+        from email_otp_resolver import is_allowed_initial_magic_link_host, validate_magic_link_closure
 
         assert self.page is not None
         if not magic_link or not str(magic_link).strip():
@@ -901,6 +902,13 @@ class BrowserRuntime:
         parsed = urlparse(clean_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise BrowserRuntimeError("INVALID_MAGIC_LINK", "Invalid magic link URL scheme or netloc")
+
+        initial_host = (parsed.netloc or "").split(":")[0].lower()
+        if not is_allowed_initial_magic_link_host(initial_host, platform_domain):
+            raise BrowserRuntimeError(
+                "MAGIC_LINK_HOST_FORBIDDEN",
+                f"Initial magic link host {initial_host} is not permitted for target platform {platform_domain}",
+            )
 
         try:
             self.page.goto(clean_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
@@ -920,11 +928,15 @@ class BrowserRuntime:
         if not current_snapshot.get("human_blocker"):
             self._stopped_for_human = False
 
+        parsed_landed = urlparse(final_url)
+        safe_landed_domain = (parsed_landed.netloc or "").split(":")[0].lower()
+
         return {
             "ok": True,
             "action": "MAGIC_LINK_RESOLVED",
+            "closure_verified": True,
             "target_id": self.target_id,
-            "current_url": self.page.url,
+            "safe_landed_domain": safe_landed_domain,
             "stopped_for_human": self._stopped_for_human,
         }
 

@@ -72,13 +72,26 @@ def main():
     parser.add_argument("--batch-size", type=int, default=100, help="default max rows per invocation (1-100)")
     parser.add_argument("--home", default=str(Path.home()), help="home directory used for private config")
     parser.add_argument("--migrate", action="store_true", help="safely migrate legacy project_sheet to 外链管理")
+    parser.add_argument(
+        "--verified-worksheets",
+        help="comma-separated list of currently verified worksheets from the live spreadsheet (required when using --migrate)",
+    )
     args = parser.parse_args()
 
     root = Path(args.home).expanduser().resolve() / ".backlink-autofill"
     path = root / "control-plane.json"
 
     if args.migrate:
-        migrated = safe_migrate_control_plane(path)
+        if not args.verified_worksheets:
+            raise SystemExit(
+                "Error: --verified-worksheets is required when running --migrate to verify live Google Sheet state before migration"
+            )
+        verified_worksheets = [ws.strip() for ws in args.verified_worksheets.split(",") if ws.strip()]
+        if PROJECT_SHEET not in verified_worksheets:
+            raise SystemExit(
+                f"Error: Target worksheet {PROJECT_SHEET!r} not found in verified worksheets {verified_worksheets}; migration aborted"
+            )
+        migrated = safe_migrate_control_plane(path, available_worksheets=verified_worksheets)
         if not migrated:
             print("No migration needed or configuration not found.")
         return

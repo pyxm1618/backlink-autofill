@@ -106,6 +106,11 @@ def build_parser() -> argparse.ArgumentParser:
     val_master_parser.add_argument("--prior-json", default="{}")
     val_master_parser.add_argument("--proposed-json", required=True)
 
+    val_start_parser = subparsers.add_parser("validate-execution-start")
+    val_start_parser.add_argument("--project-row-json", required=True)
+    val_start_parser.add_argument("--master-rows-json", required=True)
+    val_start_parser.add_argument("--now-iso")
+
     otp_parser = subparsers.add_parser("resolve-email-otp")
     _add_common(otp_parser)
     otp_parser.add_argument("--stdin", action="store_true", required=True, help="read OTP ephemerally from stdin")
@@ -296,6 +301,22 @@ def main() -> int:
                 proposed=proposed,
             )
             result = {"ok": True, "validated": validated}
+
+        elif args.command == "validate-execution-start":
+            try:
+                project_row = json.loads(args.project_row_json)
+                master_rows = json.loads(args.master_rows_json)
+            except json.JSONDecodeError:
+                return _emit_error("INVALID_JSON", "project-row-json and master-rows-json must be valid JSON")
+            if not isinstance(project_row, dict):
+                return _emit_error("INVALID_PROJECT_ROW", "project-row-json must be a JSON object")
+            if not isinstance(master_rows, list):
+                return _emit_error("INVALID_MASTER_ROWS", "master-rows-json must be a JSON array")
+            result = ProductionSheetGate.validate_execution_start(
+                project_row=project_row,
+                master_rows=master_rows,
+                now_iso=args.now_iso,
+            )
 
         elif args.command == "resolve-email-otp":
             if not args.target_id:

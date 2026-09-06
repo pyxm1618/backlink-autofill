@@ -445,6 +445,241 @@ class TestMasterGateProtection(unittest.TestCase):
         self.assertEqual(res["status"], "失败")
         self.assertEqual(res["reason"], "缺少有效提交入口")
 
+    def test_validate_execution_start_ineligible_preserves_attempt_count(self):
+        """P0-4 & P0-5: Master Gate 拦截时绝对不累加尝试次数，尝试次数严格只对应真实浏览器执行尝试"""
+        from execution_state import validate_execution_start
+
+        project_row_0 = {
+            "项目ID": "quick-iching",
+            "外链ID": "test.com",
+            "状态": "待提交",
+            "尝试次数": "0",
+            "目标URL": "https://quickiching.com",
+        }
+        project_row_1 = {
+            "项目ID": "quick-iching",
+            "外链ID": "test.com",
+            "状态": "待提交",
+            "尝试次数": "1",
+            "目标URL": "https://quickiching.com",
+        }
+
+        # 1. Master 缺失 -> 失败，尝试次数保持 0，绝不增加
+        res_missing = validate_execution_start(project_row_0, master_rows=[])
+        self.assertFalse(res_missing["eligible"])
+        self.assertEqual(res_missing["proposed_status"], "失败")
+        self.assertEqual(res_missing["current_attempt_count"], 0)
+        self.assertEqual(res_missing["next_attempt_count"], 0)
+        self.assertEqual(res_missing["project_mutation"]["尝试次数"], "0")
+        self.assertEqual(res_missing["project_mutation"]["状态"], "失败")
+        self.assertIsNone(res_missing["verified_entry_url"])
+
+        # 2. Master 重复 -> 失败，尝试次数保持 1
+        dupe_masters = [
+            {"外链ID": "test.com", "提交入口": "https://test.com/submit1"},
+            {"外链ID": "test.com", "提交入口": "https://test.com/submit2"},
+        ]
+        res_dupe = validate_execution_start(project_row_1, master_rows=dupe_masters)
+        self.assertFalse(res_dupe["eligible"])
+        self.assertEqual(res_dupe["proposed_status"], "失败")
+        self.assertEqual(res_dupe["current_attempt_count"], 1)
+        self.assertEqual(res_dupe["next_attempt_count"], 1)
+        self.assertEqual(res_dupe["project_mutation"]["尝试次数"], "1")
+
+        # 3. Master 已排除 -> 不适用，尝试次数保持 0
+        excluded_master = [{
+            "外链ID": "test.com",
+            "基础状态": "已排除",
+            "基础排除原因": "Domain parked",
+            "提交入口": "https://test.com/submit",
+        }]
+        res_excl = validate_execution_start(project_row_0, master_rows=excluded_master)
+        self.assertFalse(res_excl["eligible"])
+        self.assertEqual(res_excl["proposed_status"], "不适用")
+        self.assertEqual(res_excl["next_attempt_count"], 0)
+        self.assertEqual(res_excl["project_mutation"]["尝试次数"], "0")
+        self.assertEqual(res_excl["project_mutation"]["状态"], "不适用")
+
+        # 4. Master 失效 -> 失败，尝试次数保持 1
+        dead_master = [{
+            "外链ID": "test.com",
+            "基础状态": "失效",
+            "提交入口": "https://test.com/submit",
+        }]
+        res_dead = validate_execution_start(project_row_1, master_rows=dead_master)
+        self.assertFalse(res_dead["eligible"])
+        self.assertEqual(res_dead["proposed_status"], "失败")
+        self.assertEqual(res_dead["next_attempt_count"], 1)
+        self.assertEqual(res_dead["project_mutation"]["尝试次数"], "1")
+
+        # 5. Master 无有效提交入口 -> 失败，尝试次数保持 0
+        no_url_master = [{
+            "外链ID": "test.com",
+            "基础状态": "候选",
+            "提交入口": "javascript:void(0)",
+        }]
+        res_nourl = validate_execution_start(project_row_0, master_rows=no_url_master)
+        self.assertFalse(res_nourl["eligible"])
+        self.assertEqual(res_nourl["proposed_status"], "失败")
+        self.assertEqual(res_nourl["next_attempt_count"], 0)
+        self.assertEqual(res_nourl["project_mutation"]["尝试次数"], "0")
+
+    def test_validate_execution_start_eligible_increments_attempt_count(self):
+        """P0-4: 只有 Master 验证合格启动执行时，尝试次数才严格 +1 并产生处理中变更"""
+        from execution_state import validate_execution_start
+
+        project_row = {
+            "项目ID": "quick-iching",
+            "外链ID": "valid.com",
+            "状态": "待提交",
+            "尝试次数": "0",
+            "目标URL": "https://quickiching.com",
+        }
+        valid_master = [{
+            "外链ID": "valid.com",
+            "基础状态": "候选",
+            "提交入口": "https://valid.com/submit",
+        }]
+        res = validate_execution_start(project_row, master_rows=valid_master)
+        self.assertTrue(res["eligible"])
+        self.assertEqual(res["proposed_status"], "处理中")
+        self.assertEqual(res["current_attempt_count"], 0)
+        self.assertEqual(res["next_attempt_count"], 1)
+        self.assertEqual(res["verified_entry_url"], "https://valid.com/submit")
+        self.assertEqual(res["project_mutation"]["状态"], "处理中")
+        self.assertEqual(res["project_mutation"]["尝试次数"], "1")
+
+    def test_cli_validate_execution_start_entrypoint(self):
+        """P0-5: browser_cli.py validate-execution-start 作为独立生产门禁命令"""
+        import subprocess
+        import json
+
+        cli_path = scripts_dir / "browser_cli.py"
+
+        # 1. 不合格情形：通过 CLI 调用，返回 JSON eligible=False 且尝试次数保持 0
+        res_ineligible = subprocess.run(
+            [
+                sys.executable,
+                str(cli_path),
+                "validate-execution-start",
+                "--project-row-json",
+                json.dumps({"项目ID": "p1", "外链ID": "bad.com", "尝试次数": "0"}),
+                "--master-rows-json",
+                json.dumps([{
+                    "外链ID": "bad.com",
+                    "基础状态": "已排除",
+                    "基础排除原因": "Spam directory",
+                    "提交入口": "https://bad.com/submit",
+                }]),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res_ineligible.returncode, 0)
+        out_ineligible = json.loads(res_ineligible.stdout)
+        self.assertTrue(out_ineligible["ok"])
+        self.assertFalse(out_ineligible["eligible"])
+        self.assertEqual(out_ineligible["proposed_status"], "不适用")
+        self.assertEqual(out_ineligible["next_attempt_count"], 0)
+
+        # 2. 合格情形：通过 CLI 调用，返回 JSON eligible=True 且尝试次数 +1
+        res_eligible = subprocess.run(
+            [
+                sys.executable,
+                str(cli_path),
+                "validate-execution-start",
+                "--project-row-json",
+                json.dumps({"项目ID": "p1", "外链ID": "good.com", "尝试次数": "0", "目标URL": "https://p1.com"}),
+                "--master-rows-json",
+                json.dumps([{
+                    "外链ID": "good.com",
+                    "基础状态": "候选",
+                    "提交入口": "https://good.com/submit",
+                }]),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res_eligible.returncode, 0)
+        out_eligible = json.loads(res_eligible.stdout)
+        self.assertTrue(out_eligible["ok"])
+        self.assertTrue(out_eligible["eligible"])
+        self.assertEqual(out_eligible["proposed_status"], "处理中")
+        self.assertEqual(out_eligible["next_attempt_count"], 1)
+        self.assertEqual(out_eligible["verified_entry_url"], "https://good.com/submit")
+
+
+class TestControlPlaneConfiguration(unittest.TestCase):
+    """P1: configure-control-plane.py migration safety verification."""
+
+    def test_configure_control_plane_migrate_requires_verified_worksheets(self):
+        import tempfile
+        import subprocess
+        import json
+
+        repo_root = Path(__file__).resolve().parents[3]
+        script_path = repo_root / "scripts" / "configure-control-plane.py"
+
+        with tempfile.TemporaryDirectory() as tmp_home:
+            config_dir = Path(tmp_home) / ".backlink-autofill"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            config_file = config_dir / "control-plane.json"
+
+            legacy_data = {
+                "schema_version": 1,
+                "spreadsheet_id": "test_sheet_123",
+                "master_sheet": "外链总表",
+                "project_sheet": "项目外链管理",
+                "default_batch_size": 100,
+            }
+            config_file.write_text(json.dumps(legacy_data), encoding="utf-8")
+
+            # 1. 缺少 --verified-worksheets 必须拒绝
+            proc_no_ws = subprocess.run(
+                [sys.executable, str(script_path), "--home", tmp_home, "--migrate"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(proc_no_ws.returncode, 0)
+            self.assertIn("--verified-worksheets is required", proc_no_ws.stderr)
+
+            # 2. --verified-worksheets 中不包含 '外链管理' 必须拒绝
+            proc_missing_target = subprocess.run(
+                [
+                    sys.executable,
+                    str(script_path),
+                    "--home", tmp_home,
+                    "--migrate",
+                    "--verified-worksheets", "外链总表,黑名单视图",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(proc_missing_target.returncode, 0)
+            self.assertIn("Target worksheet '外链管理' not found", proc_missing_target.stderr)
+
+            # 3. 提供合规且包含 '外链管理' 的工作表列表，成功安全迁移
+            proc_ok = subprocess.run(
+                [
+                    sys.executable,
+                    str(script_path),
+                    "--home", tmp_home,
+                    "--migrate",
+                    "--verified-worksheets", "外链总表,外链管理,黑名单视图",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_ok.returncode, 0)
+            migrated_data = json.loads(config_file.read_text(encoding="utf-8"))
+            self.assertEqual(migrated_data["project_sheet"], "外链管理")
+            self.assertEqual(migrated_data["spreadsheet_id"], "test_sheet_123")
+
 
 if __name__ == "__main__":
     unittest.main()

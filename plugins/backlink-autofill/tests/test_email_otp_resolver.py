@@ -425,6 +425,106 @@ class EmailOtpResolverTests(unittest.TestCase):
         self.assertEqual(res.status, "EMAIL_OTP_AMBIGUOUS")
         self.assertEqual(res.action_required, "NEEDS_HUMAN")
 
+    def test_magic_link_dns_boundary_checks(self):
+        """P0-3: 严格 DNS 边界匹配，拦截 foundrlist.com.evil.example 仿冒攻击"""
+        from email_otp_resolver import is_safe_subdomain_or_exact, is_allowed_initial_magic_link_host
+
+        # 子域与精确匹配
+        self.assertTrue(is_safe_subdomain_or_exact("foundrlist.com", "foundrlist.com"))
+        self.assertTrue(is_safe_subdomain_or_exact("auth.foundrlist.com", "foundrlist.com"))
+        self.assertTrue(is_safe_subdomain_or_exact("sub.auth.foundrlist.com", "foundrlist.com"))
+        self.assertTrue(is_safe_subdomain_or_exact("www.foundrlist.com", "foundrlist.com"))
+
+        # 恶意后缀绕过攻击必须严格拦截
+        self.assertFalse(is_safe_subdomain_or_exact("foundrlist.com.evil.example", "foundrlist.com"))
+        self.assertFalse(is_safe_subdomain_or_exact("notfoundrlist.com", "foundrlist.com"))
+        self.assertFalse(is_safe_subdomain_or_exact("evil-foundrlist.com", "foundrlist.com"))
+
+        # is_allowed_initial_magic_link_host 平台与 ESP 检验
+        self.assertTrue(is_allowed_initial_magic_link_host("foundrlist.com", "foundrlist.com"))
+        self.assertTrue(is_allowed_initial_magic_link_host("auth.foundrlist.com", "foundrlist.com"))
+        self.assertTrue(is_allowed_initial_magic_link_host("click.postmarkapp.com", "foundrlist.com"))
+        self.assertTrue(is_allowed_initial_magic_link_host("link.mailgun.org", "foundrlist.com"))
+        self.assertTrue(is_allowed_initial_magic_link_host("email.mg.resend.com", "foundrlist.com"))
+
+        # ESP 恶意仿冒与受保护 IdP 必须严格拦截
+        self.assertFalse(is_allowed_initial_magic_link_host("postmarkapp.com.evil.example", "foundrlist.com"))
+        self.assertFalse(is_allowed_initial_magic_link_host("sendgrid.net.attacker.com", "foundrlist.com"))
+        self.assertFalse(is_allowed_initial_magic_link_host("accounts.google.com", "foundrlist.com"))
+        self.assertFalse(is_allowed_initial_magic_link_host("github.com", "foundrlist.com"))
+
+    def test_resolve_email_magic_link_redacts_tokens_completely(self):
+        """P0-2: Magic Link 成功后绝不通过 current_url 泄露 token/query，仅返回安全落地 host"""
+        import tempfile
+        from functools import partial
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            html_file = tmp_dir / "index.html"
+            html_file.write_text("<!DOCTYPE html><html><body><h1>Welcome Dashboard</h1></body></html>", encoding="utf-8")
+            handler = partial(SimpleHTTPRequestHandler, directory=str(tmp_dir))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            port = server.server_port
+            secret_token = "SUPER_SECRET_TOKEN_ABC123_XYZ"
+            magic_url = f"http://127.0.0.1:{port}/index.html?token={secret_token}&verify=true"
+
+            profile = tmp_dir / "profile"
+            with browser_runtime.BrowserRuntime(
+                profile_dir=profile,
+                browser_channel="chromium",
+                allow_local_fallback=True,
+            ) as rt:
+                rt.navigate(f"http://127.0.0.1:{port}/index.html")
+                res = rt.resolve_email_magic_link(
+                    target_id="",
+                    magic_link=magic_url,
+                    platform_domain=f"127.0.0.1:{port}",
+                )
+
+                self.assertTrue(res["ok"])
+                self.assertEqual(res["action"], "MAGIC_LINK_RESOLVED")
+                self.assertTrue(res["closure_verified"])
+                self.assertEqual(res["safe_landed_domain"], "127.0.0.1")
+
+                # 核心断言：绝对没有 current_url 键
+                self.assertNotIn("current_url", res)
+
+                # 核心断言：secret_token 绝对不出现在返回字典序列化后的任何角落
+                res_json = json.dumps(res)
+                self.assertNotIn(secret_token, res_json)
+
+            server.shutdown()
+            server.server_close()
+
+    def test_resolve_email_magic_link_blocks_forbidden_host_before_goto(self):
+        """P0-3: initial URL 若指向不合规域名，在 goto 前强拦截抛出 MAGIC_LINK_HOST_FORBIDDEN 且不泄露 token"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "profile"
+            with browser_runtime.BrowserRuntime(
+                profile_dir=profile,
+                browser_channel="chromium",
+                allow_local_fallback=True,
+            ) as rt:
+                secret_token = "SECRET_TOKEN_NOT_ALLOWED"
+                forbidden_url = f"https://foundrlist.com.evil.example/confirm?token={secret_token}"
+
+                with self.assertRaises(browser_runtime.BrowserRuntimeError) as ctx:
+                    rt.resolve_email_magic_link(
+                        target_id="",
+                        magic_link=forbidden_url,
+                        platform_domain="foundrlist.com",
+                    )
+
+                self.assertEqual(ctx.exception.code, "MAGIC_LINK_HOST_FORBIDDEN")
+                # 异常消息中绝对不泄漏 secret_token
+                self.assertNotIn(secret_token, ctx.exception.message)
+
 
 if __name__ == "__main__":
     unittest.main()
