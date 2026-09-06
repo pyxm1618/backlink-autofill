@@ -37,11 +37,11 @@ Do not narrate every successful row. Interrupt the user only for a genuine human
 8. **Evidence & State Contract (Universal Invariants):**
    - **Invariant 1: Prior research is discovery provenance, NOT observed facts.** Discovery sources, BacklinkOS tags, historical datasets, and manual research must NEVER populate `实测免费`, `实测需登录`, `实测登录方式`, `实测限制`, or `实测链接属性`. These fields require direct browser evidence from the current run.
    - **Invariant 2: Observed link attribute (`实测链接属性`) requires live public DOM evidence.** `Follow`, `Nofollow`, `UGC`, or `Sponsored` can ONLY be written after the listing is verified live and the target `<a>` tag's `rel` attribute is inspected in the public page DOM. If unverified or not yet live, it MUST remain blank.
-   - **Invariant 3: Public result URL requires verified public page and positive evidence.** `项目外链管理.结果链接` must NEVER contain private URLs (dashboard, admin, account, edit, payment, queue, confirmation, auth). Absence of blacklist keywords is NOT sufficient: the URL MUST have positive verification confirming public accessibility without authentication (`public_access_verified`) and accurate product identity (`listing_identity_verified`). If positive evidence is missing or unverified, `结果链接` MUST remain blank, and the private dashboard/queue URL may only be recorded in `证据摘要` as execution evidence.
+   - **Invariant 3: Public result URL requires verified public page and positive evidence.** `外链管理.结果链接` must NEVER contain private URLs (dashboard, admin, account, edit, payment, queue, confirmation, auth). Absence of blacklist keywords is NOT sufficient: the URL MUST have positive verification confirming public accessibility without authentication (`public_access_verified`) and accurate product identity (`listing_identity_verified`). If positive evidence is missing or unverified, `结果链接` MUST remain blank, and the private dashboard/queue URL may only be recorded in `证据摘要` as execution evidence.
    - **Invariant 4: Classify status by strongest verified evidence.** If an explicit future launch/publication/scheduled date exists, prioritize `已排期` over `Pending` or `审核中`. Never classify as `已上线` without a verified, accessible public listing page.
    - **Invariant 5: Browser runtime strictly rejects control plane URLs.** Navigating Playwright/CDP to `docs.google.com` or `sheets.google.com` is forbidden at runtime (`CONTROL_PLANE_URL_FORBIDDEN`).
    - **Invariant 6: Unknown facts remain blank.** Never guess or infer missing platform attributes.
-9. **Mandatory Production Mutation Gate.** Before any Sheet mutation is written to `项目外链管理` or `外链总表`, the update payload MUST pass through the unified Evidence Contract validator (`browser_cli.py validate-project-mutation` / `validate-master-mutation` or `ProductionSheetGate`). Any direct write bypassing this validator is strictly forbidden.
+9. **Mandatory Production Mutation Gate.** Before any Sheet mutation is written to `外链管理` or `外链总表`, the update payload MUST pass through the unified Evidence Contract validator (`browser_cli.py validate-project-mutation` / `validate-master-mutation` or `ProductionSheetGate`). Any direct write bypassing this validator is strictly forbidden.
 
 ## Private runtime model
 
@@ -52,7 +52,7 @@ Read `~/.backlink-autofill/control-plane.json` before queue work:
   "schema_version": 1,
   "spreadsheet_id": "<private>",
   "master_sheet": "外链总表",
-  "project_sheet": "项目外链管理",
+  "project_sheet": "外链管理",
   "default_batch_size": 100
 }
 ```
@@ -98,8 +98,8 @@ Process **at most 100 rows per invocation** by default. If the user requests few
 ### Queue discovery
 
 1. Resolve the exact Spreadsheet ID from `control-plane.json`.
-2. Verify tabs `外链总表` and `项目外链管理` and their exact headers.
-3. Search/read `项目外链管理` for the exact selected `项目ID` in bounded ranges.
+2. Verify tabs `外链总表` and `外链管理` and their exact headers.
+3. Search/read `外链管理` for the exact selected `项目ID` in bounded ranges.
 4. Retain only exact `状态 == 待提交` rows, preserving original Sheet row numbers.
 5. Select at most the configured batch limit in Sheet order unless explicitly told otherwise.
 
@@ -130,12 +130,14 @@ Immediately before new execution:
 
 Create/update a project+row checkpoint before website mutation. Checkpoints contain only safe state, never credentials.
 
-### 2. Resolve platform row
+### 2. Resolve platform row and enforce Master Execution Gate
 
-Join by `外链ID` to exactly one row in `外链总表`; require a valid `提交入口`.
+Join by `外链ID` to exactly one row in `外链总表`; enforce Master Execution Gate before browser launch:
 
 - no exact master row → `失败`, `外链ID在外链总表中不存在`;
 - duplicate exact master rows → `失败`, `外链ID在外链总表中不唯一`;
+- master `基础状态 == 已排除` → `不适用`, `外链总表基础状态为已排除：<基础排除原因>` (安全退出，禁止启动浏览器提交);
+- master `基础状态 == 失效` → `失败`, `外链总表基础状态为失效` (安全退出，禁止启动浏览器提交);
 - invalid/missing submit URL → `失败`, `缺少有效提交入口`.
 
 Do not silently web-search a replacement URL for a data-integrity failure.
@@ -206,9 +208,9 @@ Login priority for each platform:
 5. **Credential domain isolation (two-layer defense)**:
    - **Layer 1 (Target Domain Allow Rule)**: `credential_fill` may ONLY fill passwords when the current page domain matches the explicit `target_domain` of the backlink platform.
    - **Layer 2 (Third-party IdP blocklist)**: `credential_fill` is strictly forbidden on any third-party Identity Provider domain (such as `accounts.google.com`, `github.com`, `x.com`, `twitter.com`, `apple.com`, `microsoft.com`).
-6. **Human blockers (e.g. EMAIL_OTP, CAPTCHA, 2FA, SMS)**:
-   - `EMAIL_OTP` requires composite evidence: both verification code cues and explicit email/inbox context.
-   - Enter `需人工`, retain the browser tab, persist `human_pending` record, and **continue the batch immediately without stopping**.
+6. **Email verification vs. Human-only blockers**:
+   - **Email verification (OTP & Magic Link)**: Default to automated resolution via host mail capability (Codex Gmail connected app or Google Antigravity Gmail MCP). Email OTP and platform registration confirmation/Magic Links are automated first. Only genuine unresolved email verifications (mail capability unavailable, no matching email, multiple ambiguous emails, protected-auth email, verification link fails safety check, or fill failure) fall back to `需人工`.
+   - **True Human-only blockers (CAPTCHA, 2FA, passkey, SMS, payment)**: Enter `需人工`, retain the browser tab, persist `human_pending` record, and **continue the batch immediately without stopping**.
 
 ### 7. Build and execute an explicit action plan
 
@@ -263,7 +265,7 @@ Do not stop merely because the button is named Submit/Publish/Launch/Post/Create
 
 Core rule: **`NEEDS_HUMAN` pauses only the current row; it NEVER stops the batch.**
 
-When encountering an email verification code, CAPTCHA, 2FA, passkey, payment, or other genuine human blocker:
+When encountering an unresolved email verification blocker, CAPTCHA, 2FA, passkey, payment, or other genuine human blocker:
 
 1. Save credential-free row checkpoint;
 2. Save durable `human_pending` record under `~/.backlink-autofill/runtime/human-pending/` including project ID, backlink ID, current URL, blocker type, and CDP `target_id`;
@@ -291,28 +293,30 @@ When the user completes the human step in the visible Chrome window and asks to 
    - **Do NOT delete the pending record**;
    - Retain `需人工` status and inform the user.
 
-### 9b. Automated EMAIL_OTP resolution via host mail capability
+### 9b. Automated Email Verification (OTP & Magic Link) via host mail capability
 
-When the browser runtime halts on an `EMAIL_OTP` blocker, the Agent should attempt automated, secure resolution if host mail capability is active:
+When the browser runtime halts on an `EMAIL_OTP` or platform email verification / confirmation screen, the Agent attempts automated, secure resolution if host mail capability is active:
 
 1. **Host-agnostic Capability Detection**:
    - Inspect the tools exposed in the current AI host session:
-     - **Codex**: Check if the authorized Gmail Plugin / connected app tools are available;
-     - **Google Antigravity**: Check if the authorized Gmail MCP tools (`gmail_search`, `gmail_get_message`) are available.
+     - **Codex**: Check if authorized Gmail connected app tools are available;
+     - **Google Antigravity / Gemini**: Check if authorized Gmail MCP tools (`gmail_search`, `gmail_get_message`) are available.
    - Do NOT hardcode detection by model name strings. If neither capability is active or authorized, fall back gracefully to `需人工` with reason `"Mail capability unavailable"`.
 2. **Search Narrow Window**:
    - Query messages matching `to:<registration_email>` received within the recent narrow window (`blocker_started_at` ± a few minutes) related to the platform name/domain.
-3. **Core Resolver & Security Invariants**:
+3. **Core Resolver & Two-layer Security Invariants**:
    - Pass retrieved messages to the universal Core Resolver (`email_otp_resolver.py`):
-     - **Per-candidate Protected Auth exclusion**: Any Google/GitHub/IdP login, password reset, or payment verification email is strictly excluded per-candidate.
-     - **Universal Platform Identity Scoring**: Evaluates recipient, time window, sender display name, subject, body, and link domain (fully supporting third-party ESPs like Resend, Postmark, SendGrid, SES).
+     - **Layer 1: High-confidence platform email**: Must match recipient, blocker time window, and platform identity (compatible with ESPs like Postmark, SendGrid, Resend, SES).
+     - **Per-candidate Protected Auth exclusion**: Any Google/GitHub/Microsoft/Apple primary IdP login, password reset, account recovery, or payment verification email is strictly excluded per-candidate.
+     - **Magic Link Support**: If the platform sends a confirmation link instead of numeric OTP, extract the verification link. The initial URL may pass through trusted ESP redirect hosts, but must never navigate to protected IdPs.
      - **Deterministic Ambiguity Rejection**: Requires a single high-confidence candidate. If multiple conflicting candidates exist (`EMAIL_OTP_AMBIGUOUS`) or none match (`EMAIL_OTP_NOT_FOUND`), fall back to `需人工`.
 4. **Ephemeral Secret Transmission via Stdin**:
-   - **Strict Prohibition on `echo "<OTP>" | ...`**: Never include OTP values in shell commands, command-line arguments (argv), or logged command strings, which would leak into transcript history.
-   - Run `browser_cli.py resolve-email-otp --stdin ...` with the target CDP `target_id`. Feed the OTP strictly through the spawned child process's standard input stream.
-   - The CLI output confirms only `EMAIL_OTP_RESOLVED` and never echoes the code value.
+   - **Strict Prohibition on logging secrets**: Never include OTP values or tokenized Magic Links in shell commands, command-line arguments (argv), logged command strings, or Sheet rows.
+   - For numeric/alphanumeric code: run `browser_cli.py resolve-email-otp --stdin ...` with code piped via stdin.
+   - For Magic Link: run `browser_cli.py resolve-magic-link --stdin --platform-domain <domain> ...` with URL piped via stdin.
+   - **Layer 2: Browser Identity Closure**: When resolving a Magic Link, browser navigates under control. The final destination page must achieve target platform identity closure without falling into protected IdP authentication.
 5. **Seamless Continuation**:
-   - Upon successful verification, the browser tab moves directly to the next onboarding/submission step without page reload and without re-registering.
+   - Upon successful verification, the browser moves directly to the next onboarding/submission step without re-registering and without entering `需人工`.
 
 ### 10. Classify outcome from evidence
 
@@ -324,7 +328,7 @@ Classify status strictly according to the strongest verifiable browser evidence 
 - `已提交` — Final submission action confirmed/received, but review, scheduling, or live status is undetermined.
 - `不适用` — Observed eligibility, payment, product constraint, or policy incompatibility (e.g. non-free with no free path, AI-only constraint not met).
 - `失败` — Concrete execution failure with verified evidence that no submission was accepted.
-- `需人工` — Human-only blocker (Email OTP, CAPTCHA, 2FA, SMS, phone verification, payment) or ambiguous post-submit outcome.
+- `需人工` — Genuine unresolved blocker (unresolved Email OTP/verification, CAPTCHA, 2FA, SMS, phone verification, payment) or ambiguous post-submit outcome.
 
 If final Submit was clicked but outcome is ambiguous, use `需人工` with `已执行提交但结果不明确，避免重复提交`; never auto-retry.
 
@@ -332,7 +336,7 @@ If final Submit was clicked but outcome is ambiguous, use `需人工` with `已�
 
 ### 11. Update exact project row
 
-Before writing to `项目外链管理`, pass the payload and browser evidence through the production gate:
+Before writing to `外链管理`, pass the payload and browser evidence through the production gate:
 ```bash
 python3 plugins/backlink-autofill/scripts/browser_cli.py validate-project-mutation \
   --evidence-json '<evidence_json>' \

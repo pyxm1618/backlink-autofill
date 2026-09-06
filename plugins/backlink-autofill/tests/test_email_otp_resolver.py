@@ -338,6 +338,93 @@ class EmailOtpResolverTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_magic_link_platform_resolution(self):
+        """Magic Link 解析：平台自身确认邮件提取 verification link 并标记 kind='magic_link'"""
+        msg = EmailMessage(
+            id="ml-msg-1",
+            sender="FoundrList <auth@foundrlist.com>",
+            recipient="pyxm1618@gmail.com",
+            subject="Confirm your FoundrList account",
+            date_timestamp=1788587910.0,
+            body_text="Click here to confirm your account: https://foundrlist.com/auth/confirm?token=xyz123abc. This link expires in 15 minutes.",
+            snippet="Click here to confirm your account",
+        )
+        res = resolve_email_otp_from_messages(self.request, [msg])
+        self.assertEqual(res.status, "RESOLVED")
+        self.assertEqual(res.kind, "magic_link")
+        self.assertIn("https://foundrlist.com/auth/confirm?token=xyz123abc", res.verification_link)
+
+    def test_magic_link_esp_redirect_boundary_case_a(self):
+        """Case A 边界：第三方 ESP redirect (click.postmarkapp.com) 允许提取并在闭环到达平台时自动完成"""
+        from email_otp_resolver import validate_magic_link_closure
+
+        msg = EmailMessage(
+            id="esp-msg-1",
+            sender="FoundrList Support <notifications@postmark.foundrlist.com>",
+            recipient="pyxm1618@gmail.com",
+            subject="Verify your email for FoundrList",
+            date_timestamp=1788587915.0,
+            body_text="Please verify your email: https://click.postmarkapp.com/f/a/xyz987token/foundrlist-verify",
+            snippet="Please verify your email",
+        )
+        res = resolve_email_otp_from_messages(self.request, [msg])
+        self.assertEqual(res.status, "RESOLVED")
+        self.assertEqual(res.kind, "magic_link")
+        self.assertIn("click.postmarkapp.com", res.verification_link)
+
+        # 模拟浏览器导航后最终重定向到目标平台：验证通过
+        final_redirect_url = "https://foundrlist.com/onboarding/welcome?verified=true"
+        closure_ok = validate_magic_link_closure(final_redirect_url, platform_domain="foundrlist.com")
+        self.assertTrue(closure_ok, "ESP redirect landing on platform domain must achieve closure")
+
+    def test_magic_link_protected_idp_boundary_case_b(self):
+        """Case B 边界：引导到 accounts.google.com 受保护身份验证时必须拒绝自动处理转需人工"""
+        from email_otp_resolver import validate_magic_link_closure
+
+        # 1. 链接直接指向 accounts.google.com 被直接过滤
+        msg = EmailMessage(
+            id="idp-msg-1",
+            sender="FoundrList <auth@foundrlist.com>",
+            recipient="pyxm1618@gmail.com",
+            subject="Sign in to FoundrList with Google",
+            date_timestamp=1788587915.0,
+            body_text="Click here to authenticate with Google: https://accounts.google.com/o/oauth2/auth?client_id=123",
+            snippet="Authenticate with Google",
+        )
+        res = resolve_email_otp_from_messages(self.request, [msg])
+        # 因为指向受保护 IdP，链接未被作为平台 magic link 提取，返回 NOT_FOUND 并需人工
+        self.assertEqual(res.status, "EMAIL_OTP_NOT_FOUND")
+        self.assertEqual(res.action_required, "NEEDS_HUMAN")
+
+        # 2. 若中间跳转最终落到 accounts.google.com，安全闭环检查拒绝自动处理
+        closure_fail = validate_magic_link_closure(
+            "https://accounts.google.com/signin/challenge/pwd",
+            platform_domain="foundrlist.com",
+        )
+        self.assertFalse(closure_fail, "Closure must reject landing on accounts.google.com")
+
+    def test_magic_link_ambiguous_tokens_fallback(self):
+        """多封邮件带有冲突的验证链接时，判定为 AMBIGUOUS 并回退需人工"""
+        msg1 = EmailMessage(
+            id="ml-msg-1",
+            sender="FoundrList <auth@foundrlist.com>",
+            recipient="pyxm1618@gmail.com",
+            subject="Confirm your FoundrList account",
+            date_timestamp=1788587910.0,
+            body_text="Verify here: https://foundrlist.com/verify?token=tokenAAA",
+        )
+        msg2 = EmailMessage(
+            id="ml-msg-2",
+            sender="FoundrList <auth@foundrlist.com>",
+            recipient="pyxm1618@gmail.com",
+            subject="Confirm your FoundrList account",
+            date_timestamp=1788587912.0,
+            body_text="Verify here: https://foundrlist.com/verify?token=tokenBBB",
+        )
+        res = resolve_email_otp_from_messages(self.request, [msg1, msg2])
+        self.assertEqual(res.status, "EMAIL_OTP_AMBIGUOUS")
+        self.assertEqual(res.action_required, "NEEDS_HUMAN")
+
 
 if __name__ == "__main__":
     unittest.main()

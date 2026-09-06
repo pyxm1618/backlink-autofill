@@ -883,3 +883,48 @@ class BrowserRuntime:
             "stopped_for_human": self._stopped_for_human,
         }
 
+    def resolve_email_magic_link(self, target_id: str, magic_link: str, platform_domain: str) -> dict[str, Any]:
+        """Navigate to verified email Magic Link and confirm platform identity closure.
+
+        Security guarantees:
+        - Never echoes the tokenized URL in return value or unredacted log.
+        - Enforces two-layer safety: verifies closure does not land on protected primary IdP.
+        - Confirms final landed page belongs to platform domain.
+        """
+        from email_otp_resolver import validate_magic_link_closure
+
+        assert self.page is not None
+        if not magic_link or not str(magic_link).strip():
+            raise BrowserRuntimeError("EMPTY_MAGIC_LINK", "Magic link URL cannot be empty")
+
+        clean_url = str(magic_link).strip()
+        parsed = urlparse(clean_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise BrowserRuntimeError("INVALID_MAGIC_LINK", "Invalid magic link URL scheme or netloc")
+
+        try:
+            self.page.goto(clean_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            self.page.wait_for_timeout(1000)
+        except Exception as exc:
+            raise BrowserRuntimeError("MAGIC_LINK_NAVIGATION_FAILED", f"Magic link navigation failed: {type(exc).__name__}") from exc
+
+        final_url = self.page.url
+        if not validate_magic_link_closure(final_url, platform_domain):
+            parsed_final = urlparse(final_url)
+            final_host = (parsed_final.netloc or "").split(":")[0].lower()
+            if any(idp in final_host for idp in ("google.com", "github.com", "microsoft.com", "apple.com")):
+                raise BrowserRuntimeError("PROTECTED_AUTH_NAVIGATED", f"Magic link navigated to protected IdP {final_host}; cannot auto-authenticate")
+            raise BrowserRuntimeError("MAGIC_LINK_CLOSURE_FAILED", f"Magic link failed to reach platform domain {platform_domain}; landed on {final_host}")
+
+        current_snapshot = snapshot_page(self.page)
+        if not current_snapshot.get("human_blocker"):
+            self._stopped_for_human = False
+
+        return {
+            "ok": True,
+            "action": "MAGIC_LINK_RESOLVED",
+            "target_id": self.target_id,
+            "current_url": self.page.url,
+            "stopped_for_human": self._stopped_for_human,
+        }
+

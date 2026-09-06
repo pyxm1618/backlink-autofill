@@ -110,6 +110,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(otp_parser)
     otp_parser.add_argument("--stdin", action="store_true", required=True, help="read OTP ephemerally from stdin")
 
+    magic_parser = subparsers.add_parser("resolve-magic-link")
+    _add_common(magic_parser)
+    magic_parser.add_argument("--platform-domain", required=True, help="expected platform domain")
+    magic_parser.add_argument("--stdin", action="store_true", required=True, help="read magic link URL ephemerally from stdin")
+
     return parser
 
 
@@ -311,6 +316,26 @@ def main() -> int:
                 resume_target_id=args.target_id,
             ) as runtime:
                 result = runtime.resolve_email_otp(args.target_id, otp_code)
+
+        elif args.command == "resolve-magic-link":
+            if not args.target_id:
+                return _emit_error("MISSING_TARGET_ID", "--target-id is required for resolve-magic-link")
+            if not args.stdin:
+                return _emit_error("STDIN_REQUIRED", "Magic link must be passed via --stdin ephemeral channel")
+
+            magic_url = sys.stdin.read().strip()
+            if not magic_url:
+                return _emit_error("EMPTY_MAGIC_LINK_INPUT", "No magic link URL received on stdin")
+
+            with BrowserRuntime(
+                profile_dir=Path(args.profile_dir),
+                browser_channel=args.browser_channel,
+                headless=not args.headed,
+                cdp_url=args.cdp_url,
+                allow_local_fallback=args.allow_local_fallback,
+                resume_target_id=args.target_id,
+            ) as runtime:
+                result = runtime.resolve_email_magic_link(args.target_id, magic_url, args.platform_domain)
 
         else:
             return _emit_error("INVALID_COMMAND", "unsupported command")

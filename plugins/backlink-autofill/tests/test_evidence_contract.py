@@ -327,6 +327,125 @@ class TestProductionMutationGate(unittest.TestCase):
         self.assertEqual(output["validated"]["结果链接"], "https://example.com/listings/quickiching")
 
 
+class TestSheetSchemaAndStatusContract(unittest.TestCase):
+    """Universal Sheet Schema and 9-Status Roundtrip Regression Tests."""
+
+    def test_nine_statuses_roundtrip(self):
+        from execution_state import SHEET_TO_INTERNAL, INTERNAL_TO_SHEET, sheet_status_to_internal, internal_to_sheet_status
+
+        expected_statuses = [
+            "待提交",
+            "处理中",
+            "已提交",
+            "审核中",
+            "已排期",
+            "已上线",
+            "需人工",
+            "失败",
+            "不适用",
+        ]
+        self.assertEqual(len(expected_statuses), 9)
+        self.assertEqual(sorted(SHEET_TO_INTERNAL.keys()), sorted(expected_statuses))
+
+        for status in expected_statuses:
+            internal = sheet_status_to_internal(status)
+            self.assertIsNotNone(internal)
+            roundtripped = internal_to_sheet_status(internal)
+            self.assertEqual(roundtripped, status)
+
+    def test_sheet_contract_document_alignment(self):
+        contract_path = Path(__file__).resolve().parents[1] / "references" / "project-sheet-contract.md"
+        content = contract_path.read_text(encoding="utf-8")
+
+        # 验证新 Tab 名与字段
+        self.assertIn("`外链管理`", content)
+        self.assertIn("外链ID | 平台域名 | 提交入口", content)
+        self.assertIn("项目ID | 外链ID | 外链域名 | 状态 | 尝试次数 | 最近操作时间 | 目标URL | 结果链接 | 原因/备注 | 证据摘要", content)
+        # 隐藏列说明
+        self.assertIn("外链ID` (Col B, UI 隐藏列)", content)
+        self.assertIn("尝试次数` (Col E, UI 隐藏列)", content)
+        self.assertIn("目标URL` (Col G, UI 隐藏列)", content)
+        # UI 冻结说明
+        self.assertIn("Freeze physical columns A:C", content)
+        # 旧 Tab 必须已更名
+        self.assertNotIn("Tab `项目外链管理`", content)
+
+
+class TestMasterGateProtection(unittest.TestCase):
+    """Enforce Master Execution Gate rules before browser action launch."""
+
+    def test_eligible_candidate_master(self):
+        from execution_state import check_master_execution_eligibility
+
+        master_row = {
+            "外链ID": "example.com",
+            "平台域名": "example.com",
+            "提交入口": "https://example.com/submit",
+            "基础状态": "候选",
+        }
+        res = check_master_execution_eligibility(master_row)
+        self.assertTrue(res["eligible"])
+        self.assertEqual(res["status"], "待提交")
+        self.assertEqual(res["entry_url"], "https://example.com/submit")
+
+    def test_master_excluded_maps_to_not_applicable(self):
+        from execution_state import check_master_execution_eligibility
+
+        master_row = {
+            "外链ID": "spam.com",
+            "基础状态": "已排除",
+            "基础排除原因": "Domain parked / scam site",
+            "提交入口": "https://spam.com/submit",
+        }
+        res = check_master_execution_eligibility(master_row)
+        self.assertFalse(res["eligible"])
+        self.assertEqual(res["status"], "不适用")
+        self.assertIn("外链总表基础状态为已排除：Domain parked / scam site", res["reason"])
+
+    def test_master_invalid_maps_to_failed(self):
+        from execution_state import check_master_execution_eligibility
+
+        master_row = {
+            "外链ID": "dead.com",
+            "基础状态": "失效",
+            "提交入口": "https://dead.com/submit",
+        }
+        res = check_master_execution_eligibility(master_row)
+        self.assertFalse(res["eligible"])
+        self.assertEqual(res["status"], "失败")
+        self.assertEqual(res["reason"], "外链总表基础状态为失效")
+
+    def test_missing_master_row(self):
+        from execution_state import check_master_execution_eligibility
+
+        res = check_master_execution_eligibility(None)
+        self.assertFalse(res["eligible"])
+        self.assertEqual(res["status"], "失败")
+        self.assertEqual(res["reason"], "外链ID在外链总表中不存在")
+
+    def test_duplicate_master_rows(self):
+        from execution_state import check_master_execution_eligibility
+
+        master_row = {"外链ID": "dupe.com", "提交入口": "https://dupe.com/submit"}
+        res = check_master_execution_eligibility(master_row, master_candidates_count=2)
+        self.assertFalse(res["eligible"])
+        self.assertEqual(res["status"], "失败")
+        self.assertEqual(res["reason"], "外链ID在外链总表中不唯一")
+
+    def test_missing_entry_url_integrity_failure(self):
+        from execution_state import check_master_execution_eligibility
+
+        master_row = {
+            "外链ID": "noentry.com",
+            "基础状态": "候选",
+            "提交入口": "",
+        }
+        res = check_master_execution_eligibility(master_row)
+        self.assertFalse(res["eligible"])
+        self.assertEqual(res["status"], "失败")
+        self.assertEqual(res["reason"], "缺少有效提交入口")
+
+
 if __name__ == "__main__":
     unittest.main()
 

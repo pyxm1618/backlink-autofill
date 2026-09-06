@@ -53,12 +53,12 @@ Platform-level discovery and execution facts:
 
 `发现来源` is only provenance: Google search, competitor backlink discovery, a directory list, manual input, etc. It is not a submission gate. Unknown observed facts stay blank until actually verified.
 
-### `项目外链管理`
+### `外链管理`
 
 All project execution rows share this tab and are strictly isolated by `项目ID`:
 
 ```text
-项目ID | 外链ID | 平台域名 | 状态 | 尝试次数 | 最近操作时间 |
+项目ID | 外链ID | 外链域名 | 状态 | 尝试次数 | 最近操作时间 |
 目标URL | 结果链接 | 原因/备注 | 证据摘要
 ```
 
@@ -100,7 +100,7 @@ Example:
   "schema_version": 1,
   "spreadsheet_id": "<private spreadsheet id>",
   "master_sheet": "外链总表",
-  "project_sheet": "项目外链管理",
+  "project_sheet": "外链管理",
   "default_batch_size": 100
 }
 ```
@@ -199,7 +199,7 @@ $backlink-autofill
 这次先处理 5 条。
 ```
 
-The agent reads `项目外链管理`, selects only the current project's eligible rows, and processes them in Sheet order. Ordinary successful rows run without opening a visible browser or asking for per-row confirmation. Upon reaching a terminal status and writing back to Sheet with exact-row confirmation, the corresponding task tab is automatically closed to keep browser resources bounded.
+The agent reads `外链管理`, selects only the current project's eligible rows, and processes them in Sheet order. Ordinary successful rows run without opening a visible browser or asking for per-row confirmation. Upon reaching a terminal status and writing back to Sheet with exact-row confirmation, the corresponding task tab is automatically closed to keep browser resources bounded.
 
 For a new backlink-platform account, the action plan may include:
 

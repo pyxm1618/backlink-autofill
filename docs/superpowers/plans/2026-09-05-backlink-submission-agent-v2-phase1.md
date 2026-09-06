@@ -27,7 +27,7 @@ Codex / current ChatGPT model
         +-- Google Drive/Sheets connector
         |      -> shared control Spreadsheet
         |           |- 外链总表
-        |           `- 项目外链管理
+        |           `- 外链管理
         |
         +-- backlink-autofill Skill
         |      -> project selection / policy / mapping / evidence rules
@@ -59,10 +59,10 @@ All projects share one Spreadsheet. Project isolation is by exact `项目ID`.
 
 Observed values remain blank until directly verified.
 
-### `项目外链管理`
+### `外链管理`
 
 ```text
-项目ID | 外链ID | 平台域名 | 状态 | 尝试次数 | 最近操作时间 |
+项目ID | 外链ID | 外链域名 | 状态 | 尝试次数 | 最近操作时间 |
 目标URL | 结果链接 | 原因/备注 | 证据摘要
 ```
 
@@ -127,7 +127,7 @@ Implemented:
   "schema_version": 1,
   "spreadsheet_id": "<private>",
   "master_sheet": "外链总表",
-  "project_sheet": "项目外链管理",
+  "project_sheet": "外链管理",
   "default_batch_size": 100
 }
 ```
@@ -271,7 +271,7 @@ Before calling v2 fully proven end-to-end, run from the user's installed Codex e
 1. install/update plugin and Playwright runtime dependency;
 2. configure the real private control-plane Spreadsheet ID locally;
 3. ensure Quick I Ching shared profile/assets are installed;
-4. put one real target into `外链总表` and one `quick-iching / 待提交` row into `项目外链管理`;
+4. put one real target into `外链总表` and one `quick-iching / 待提交` row into `外链管理`;
 5. invoke `$backlink-autofill` for Quick I Ching with a one-row batch;
 6. observe real website mutation/submission evidence;
 7. verify exact Sheet state/result/evidence write-back;

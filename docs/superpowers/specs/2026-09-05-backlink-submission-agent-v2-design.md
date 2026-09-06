@@ -70,12 +70,12 @@ Discovery-stage status:
 
 Observed fields remain blank until directly verified. `发现来源` is provenance only and never a submission gate.
 
-### `项目外链管理`
+### `外链管理`
 
 Exact headers:
 
 ```text
-项目ID | 外链ID | 平台域名 | 状态 | 尝试次数 | 最近操作时间 |
+项目ID | 外链ID | 外链域名 | 状态 | 尝试次数 | 最近操作时间 |
 目标URL | 结果链接 | 原因/备注 | 证据摘要
 ```
 

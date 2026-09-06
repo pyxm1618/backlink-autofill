@@ -27,7 +27,7 @@ Canonical schema:
   "schema_version": 1,
   "spreadsheet_id": "",
   "master_sheet": "外链总表",
-  "project_sheet": "项目外链管理",
+  "project_sheet": "外链管理",
   "default_batch_size": 100
 }
 ```
@@ -119,7 +119,7 @@ projects/<project-id>/
 Hard isolation rules:
 
 1. Explicit selected project ID determines the only project directory the AI may use.
-2. The same project ID is the only `项目外链管理` row set the run may mutate.
+2. The same project ID is the only `外链管理` row set the run may mutate.
 3. Missing project data/assets must not come from sibling project directories.
 4. Updating project A must preserve project B.
 5. Derived target-site images stay inside the selected project directory.

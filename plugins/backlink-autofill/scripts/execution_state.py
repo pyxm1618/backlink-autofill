@@ -337,14 +337,14 @@ def sanitize_result_url(
     """Validate and sanitize a public result URL.
 
     Invariant 3 & Positive Evidence Rule:
-    - 项目外链管理.结果链接 can only be a real public page URL
+    - 外链管理.结果链接 can only be a real public page URL
       accessible to users and search engines.
     - Blacklist keywords (dashboard, admin, account, etc.) are only an
       auxiliary defense. Absence of blacklist keywords is NOT sufficient.
     - The URL MUST have positive verifiable evidence confirming both:
       1) public access without authentication (public_access_verified)
       2) accurate product/listing identity (listing_identity_verified)
-    - If positive evidence is missing or negative, return an empty string.
+      - If positive evidence is missing or negative, return an empty string.
     """
     if not url or not isinstance(url, str):
         return ""
@@ -646,6 +646,67 @@ def enrich_master_facts(
         res["平台备注"] = str(prior_facts["平台备注"]).strip()
 
     return res
+
+
+def check_master_execution_eligibility(
+    master_row: dict[str, Any] | None,
+    master_candidates_count: int = 1,
+) -> dict[str, Any]:
+    """Verify if a candidate row from 外链总表 is eligible for project queue execution.
+
+    Master Execution Gate:
+    1. Master row missing -> 状态: 失败, 原因: 外链ID在外链总表中不存在
+    2. Duplicate master rows -> 状态: 失败, 原因: 外链ID在外链总表中不唯一
+    3. Master 基础状态 == 已排除 -> 状态: 不适用, 原因: 外链总表基础状态为已排除：<基础排除原因>
+    4. Master 基础状态 == 失效 -> 状态: 失败, 原因: 外链总表基础状态为失效
+    5. Master 缺少提交入口 -> 状态: 失败, 原因: 缺少有效提交入口
+    6. Eligible -> 状态: 待提交, eligible: True
+    """
+    if master_candidates_count > 1:
+        return {
+            "eligible": False,
+            "status": "失败",
+            "reason": "外链ID在外链总表中不唯一",
+        }
+
+    if not master_row or not isinstance(master_row, dict):
+        return {
+            "eligible": False,
+            "status": "失败",
+            "reason": "外链ID在外链总表中不存在",
+        }
+
+    base_status = str(master_row.get("基础状态") or "").strip()
+    if base_status == "已排除":
+        exclude_reason = str(master_row.get("基础排除原因") or "").strip()
+        reason = f"外链总表基础状态为已排除：{exclude_reason}" if exclude_reason else "外链总表基础状态为已排除"
+        return {
+            "eligible": False,
+            "status": "不适用",
+            "reason": reason,
+        }
+
+    if base_status == "失效":
+        return {
+            "eligible": False,
+            "status": "失败",
+            "reason": "外链总表基础状态为失效",
+        }
+
+    entry_url = str(master_row.get("提交入口") or "").strip()
+    if not entry_url:
+        return {
+            "eligible": False,
+            "status": "失败",
+            "reason": "缺少有效提交入口",
+        }
+
+    return {
+        "eligible": True,
+        "status": "待提交",
+        "reason": "",
+        "entry_url": entry_url,
+    }
 
 
 def build_project_row_update(
