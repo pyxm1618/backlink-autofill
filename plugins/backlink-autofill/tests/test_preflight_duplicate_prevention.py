@@ -240,11 +240,11 @@ class ResourceLifecycleScaleTests(unittest.TestCase):
         """资源规模验收：模拟连续处理 10 个普通 terminal tasks，页面数在退出后回落至基线；1 个挂起任务保留。
         确认：completed_tasks 增长 != remaining task pages 线性增长。
         """
-        # 1. 记录初始页面数量（基线）
+        # 1. 记录初始页面数量（基线，仅统计 type == "page"）
         with urlopen(f"{self.cdp_url}/json/list") as resp:
-            baseline_pages = len(json.load(resp))
+            baseline_pages = len([t for t in json.load(resp) if t.get("type") == "page"])
 
-        # 2. 连续运行 10 个普通任务（模拟访问 example.com 并达到终端状态关闭）
+        # 2. 连续运行 10 个普通任务（模拟访问并在终端状态正常关闭）
         for i in range(10):
             with BrowserRuntime(
                 profile_dir=Path(self.user_data_dir),
@@ -254,9 +254,17 @@ class ResourceLifecycleScaleTests(unittest.TestCase):
                 rt.navigate("https://example.com")
                 # 普通任务结束，__exit__ 会执行 page.close()
 
-        # 3. 检查处理完 10 个任务后的外部 Chrome 页面数：必须严格等于基线，未发生线性累加！
-        with urlopen(f"{self.cdp_url}/json/list") as resp:
-            after_10_pages = len(json.load(resp))
+        # 3. 检查处理完 10 个任务后的外部 Chrome 页面数：必须回落至基线，未发生线性累加！
+        deadline = time.time() + 5.0
+        after_10_pages = -1
+        while time.time() < deadline:
+            with urlopen(f"{self.cdp_url}/json/list") as resp:
+                targets = [t for t in json.load(resp) if t.get("type") == "page"]
+                after_10_pages = len(targets)
+            if after_10_pages == baseline_pages:
+                break
+            time.sleep(0.2)
+
         self.assertEqual(
             after_10_pages,
             baseline_pages,
@@ -274,13 +282,25 @@ class ResourceLifecycleScaleTests(unittest.TestCase):
             blocked_tid = rt_block.target_id
 
         # 5. 再次检查：此时应仅增加 1 个保留 Tab（基线 + 1），而不是 10 + 1 个！
-        with urlopen(f"{self.cdp_url}/json/list") as resp:
-            current_pages = json.load(resp)
-            self.assertEqual(
-                len(current_pages),
-                baseline_pages + 1,
-                "Expected exactly baseline + 1 retained human-pending tab!",
-            )
+        deadline = time.time() + 5.0
+        current_pages = []
+        while time.time() < deadline:
+            with urlopen(f"{self.cdp_url}/json/list") as resp:
+                current_pages = [t for t in json.load(resp) if t.get("type") == "page"]
+            if len(current_pages) == baseline_pages + 1:
+                break
+            time.sleep(0.2)
+
+        self.assertEqual(
+            len(current_pages),
+            baseline_pages + 1,
+            f"Expected exactly 1 blocked tab to remain (total {baseline_pages + 1}), but found {len(current_pages)}!",
+        )
+        self.assertIn(
+            blocked_tid,
+            [t.get("id") for t in current_pages],
+            f"Blocked target {blocked_tid} must be preserved in active CDP session!",
+        )
 
         # 清理该 blocked tab
         if blocked_tid:
