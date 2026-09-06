@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Regression tests enforcing the universal Evidence & State Contract."""
 
+import json
+import sys
 import unittest
 from pathlib import Path
-import sys
 
 scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
 if str(scripts_dir) not in sys.path:
@@ -894,6 +895,71 @@ class TestControlPlaneConfiguration(unittest.TestCase):
             migrated_data = json.loads(config_file.read_text(encoding="utf-8"))
             self.assertEqual(migrated_data["project_sheet"], "外链管理")
             self.assertEqual(migrated_data["spreadsheet_id"], "test_sheet_123")
+
+    def test_p0_ready_allowlist_filtering_and_standalone_fail_closed(self):
+        """P0-1: 待提交 ≠ Ready: Autofill 只能消费 Ready Allowlist 与待提交的交集，无 Allowlist 时 fail-closed"""
+        project_rows = [
+            {"项目ID": "quick-iching", "外链ID": "ready-1.com", "外链域名": "ready-1.com", "状态": "待提交"},
+            {"项目ID": "quick-iching", "外链ID": "ready-2.com", "外链域名": "ready-2.com", "状态": "待提交"},
+            {"项目ID": "quick-iching", "外链ID": "not-ready.com", "外链域名": "not-ready.com", "状态": "待提交"},
+            {"项目ID": "quick-iching", "外链ID": "done.com", "外链域名": "done.com", "状态": "已提交"},
+            {"项目ID": "other-proj", "外链ID": "ready-1.com", "外链域名": "ready-1.com", "状态": "待提交"},
+        ]
+
+        # 1. Standalone 模式（未提供 ready_allowlist）必须 fail-closed，严禁扫描任何待提交行
+        rows, err = ProductionSheetGate.filter_ready_execution_queue(
+            project_rows=project_rows,
+            selected_project_id="quick-iching",
+            ready_allowlist=None,
+        )
+        self.assertEqual(rows, [])
+        self.assertIsNotNone(err)
+        self.assertIn("STANDALONE_FAIL_CLOSED", err)
+
+        # 2. 空 allowlist 必须 fail-closed
+        rows_empty, err_empty = ProductionSheetGate.filter_ready_execution_queue(
+            project_rows=project_rows,
+            selected_project_id="quick-iching",
+            ready_allowlist=[],
+        )
+        self.assertEqual(rows_empty, [])
+        self.assertIsNotNone(err_empty)
+        self.assertIn("EMPTY_ALLOWLIST", err_empty)
+
+        # 3. 传入 Ready allowlist: 只消费交集，不取其他项目，不取已完成，最多只取 allowlist 长度，绝不自动补位
+        allowlist = ["ready-1.com", "ready-2.com"]
+        selected, err_ok = ProductionSheetGate.filter_ready_execution_queue(
+            project_rows=project_rows,
+            selected_project_id="quick-iching",
+            ready_allowlist=allowlist,
+            limit=10,
+        )
+        self.assertIsNone(err_ok)
+        self.assertEqual(len(selected), 2)
+        selected_bids = [r["外链ID"] for r in selected]
+        self.assertEqual(selected_bids, ["ready-1.com", "ready-2.com"])
+        self.assertNotIn("not-ready.com", selected_bids)
+
+        # 4. CLI 命令验证: browser_cli.py filter-ready-queue
+        cli_path = scripts_dir / "browser_cli.py"
+        import subprocess
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(cli_path),
+                "filter-ready-queue",
+                "--project-rows-json", json.dumps(project_rows),
+                "--selected-project-id", "quick-iching",
+                "--ready-allowlist-json", json.dumps(allowlist),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0)
+        cli_res = json.loads(proc.stdout)
+        self.assertTrue(cli_res["ok"])
+        self.assertEqual(cli_res["count"], 2)
 
 
 if __name__ == "__main__":

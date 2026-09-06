@@ -95,13 +95,27 @@ AND 状态 == 待提交
 
 Process **at most 100 rows per invocation** by default. If the user requests fewer, obey the smaller limit. There is no daily quota, scheduler, cron, or implicit time-based run.
 
-### Queue discovery
+### Ready Batch Handoff & Queue Discovery (待提交 ≠ Ready)
 
-1. Resolve the exact Spreadsheet ID from `control-plane.json`.
-2. Verify tabs `外链总表` and `外链管理` and their exact headers.
-3. Search/read `外链管理` for the exact selected `项目ID` in bounded ranges.
-4. Retain only exact `状态 == 待提交` rows, preserving original Sheet row numbers.
-5. Select at most the configured batch limit in Sheet order unless explicitly told otherwise.
+> [!IMPORTANT]
+> **待提交 ≠ Ready (Hard Contract)**:
+> In the universal backlog architecture, `外链管理` holds full project backlog projection (potentially thousands of candidate rows), where the vast majority intentionally have submission entry `UNKNOWN`.
+> If Autofill directly consumes raw `待提交` rows from the Sheet, they will be rejected by the Master Execution Gate (`缺少有效提交入口`) and incorrectly marked as `失败`!
+
+1. **BacklinkOS Handoff Execution**:
+   - When launched from or coordinated with BacklinkOS, the caller MUST pass the explicit **Ready batch** (e.g. `ready_allowlist` / `ready_domains` / ready manifest JSON from `prepare_execution_batch`).
+   - Autofill **MUST ONLY consume the intersection** of `(项目ID == selected project ID AND 状态 == 待提交)` AND the provided Ready allowlist.
+   - Never attempt or backfill rows outside this allowlist. If the allowlist contains 10 items, attempt **at most these 10 items**; absolutely NEVER auto-backfill the 11th row from ordinary backlog.
+2. **Standalone Execution Fail-Closed**:
+   - If running standalone and NO Ready allowlist is provided, Autofill MUST **fail closed**: stop immediately and instruct the user to run BacklinkOS Phase C (`scripts/prepare_execution_batch.py`) first to generate a verified Ready batch.
+   - Absolutely NEVER scan raw pending rows lacking submission entries and mark them as failed.
+3. **Queue Discovery Steps**:
+   - Resolve the exact Spreadsheet ID from `control-plane.json`.
+   - Verify tabs `外链总表` and `外链管理` and their exact headers.
+   - Search/read `外链管理` for the exact selected `项目ID` in bounded ranges.
+   - Retain only exact `状态 == 待提交` rows matching the Ready allowlist, preserving original Sheet row numbers.
+   - Select at most the configured batch limit in Sheet order unless explicitly told otherwise.
+   - Filter candidate rows using `python3 -m browser_cli filter-ready-queue --project-rows-json '...' --selected-project-id '<project-id>' --ready-allowlist-json '["..."]'`.
 
 Never select another project's rows even if its domain or target looks related.
 

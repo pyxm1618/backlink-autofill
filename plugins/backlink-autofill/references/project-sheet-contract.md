@@ -67,14 +67,23 @@ Do not duplicate project name, submit URL, SEO copy, keywords, separate submitte
 
 ## Execution Selection & Master Gate Protection
 
-For a selected project, the queue predicate is:
+> [!IMPORTANT]
+> **待提交 ≠ Ready (Execution Handoff Contract)**:
+> In the universal backlog architecture, `外链管理` stores full projected backlog for each project (thousands of rows).
+> Most backlog candidates intentionally have submission entry `UNKNOWN` and have not yet undergone Phase C entry verification.
+> 1. Autofill MUST ONLY consume the intersection of `(项目ID == selected project ID AND 状态 == 待提交)` AND the provided Phase C Ready Allowlist.
+> 2. If the Ready Allowlist contains 10 items, attempt at most these 10 items; NEVER auto-backfill from ordinary pending backlog rows.
+> 3. If running standalone without a Ready Allowlist, Autofill MUST fail closed and refuse to scan raw pending rows with blank submission entries.
+
+For a selected project with an active Ready Allowlist, the queue predicate is:
 
 ```text
 项目ID == <selected-project-id>
 AND 状态 == 待提交
+AND 外链ID in Ready Allowlist
 ```
 
-Read at most 100 matching rows per invocation by default.
+Read at most 100 matching rows per invocation by default (bounded by the size of the Ready Allowlist).
 
 ### Master Gate Protection Rules
 

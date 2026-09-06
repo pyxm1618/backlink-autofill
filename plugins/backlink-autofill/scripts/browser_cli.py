@@ -117,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="resume execution for proven-unsubmitted attempt without incrementing attempt count",
     )
 
+    val_queue_parser = subparsers.add_parser("filter-ready-queue")
+    val_queue_parser.add_argument("--project-rows-json", required=True)
+    val_queue_parser.add_argument("--selected-project-id", required=True)
+    val_queue_parser.add_argument("--ready-allowlist-json")
+    val_queue_parser.add_argument("--limit", type=int, default=100)
+
     otp_parser = subparsers.add_parser("resolve-email-otp")
     _add_common(otp_parser)
     otp_parser.add_argument("--stdin", action="store_true", required=True, help="read OTP ephemerally from stdin")
@@ -324,6 +330,29 @@ def main() -> int:
                 now_iso=args.now_iso,
                 resume_same_attempt=args.resume_same_attempt,
             )
+
+        elif args.command == "filter-ready-queue":
+            try:
+                project_rows = json.loads(args.project_rows_json)
+                ready_allowlist = json.loads(args.ready_allowlist_json) if args.ready_allowlist_json else None
+            except json.JSONDecodeError:
+                return _emit_error("INVALID_JSON", "project-rows-json and ready-allowlist-json must be valid JSON")
+            if not isinstance(project_rows, list):
+                return _emit_error("INVALID_PROJECT_ROWS", "project-rows-json must be a JSON array")
+            if ready_allowlist is not None and not isinstance(ready_allowlist, list):
+                return _emit_error("INVALID_ALLOWLIST", "ready-allowlist-json must be a JSON array")
+            filtered_rows, error = ProductionSheetGate.filter_ready_execution_queue(
+                project_rows=project_rows,
+                selected_project_id=args.selected_project_id,
+                ready_allowlist=ready_allowlist,
+                limit=args.limit,
+            )
+            result = {
+                "ok": error is None,
+                "error": error,
+                "count": len(filtered_rows),
+                "selected_rows": filtered_rows,
+            }
 
         elif args.command == "resolve-email-otp":
             if not args.target_id:

@@ -593,6 +593,30 @@ class ProductionSheetGate:
             resume_same_attempt=resume_same_attempt,
         )
 
+    @staticmethod
+    def filter_ready_execution_queue(
+        project_rows: list[dict[str, Any]],
+        selected_project_id: str,
+        ready_allowlist: list[str] | set[str] | None = None,
+        limit: int = 100,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Filter candidate project rows for autofill execution under P0-1 contract.
+
+        Contract Rules:
+        1. 待提交 ≠ Ready: Project backlog may contain thousands of UNKNOWN entry rows.
+        2. Autofill MUST ONLY consume the intersection of (项目ID == selected_project_id AND 状态 == '待提交')
+           AND the provided ready_allowlist (domains verified by BacklinkOS Phase C).
+        3. If ready_allowlist is not provided (standalone run without allowlist), FAIL CLOSED:
+           return ([], "STANDALONE_FAIL_CLOSED: 待提交 ≠ Ready. 未提供 BacklinkOS Ready Allowlist，严禁直接消费未经验证的待提交行，请先执行 Phase C prepare_execution_batch").
+        4. If ready_allowlist has N items, at most N matching rows can be attempted (never backfill from ordinary backlog).
+        """
+        return filter_ready_execution_queue(
+            project_rows=project_rows,
+            selected_project_id=selected_project_id,
+            ready_allowlist=ready_allowlist,
+            limit=limit,
+        )
+
 
 def enrich_master_facts(
     prior_facts: dict[str, Any] | None,
@@ -1260,3 +1284,64 @@ def clear_human_pending(
         )
     path = _human_pending_path(runtime_root, project_id, backlink_id)
     path.unlink(missing_ok=True)
+
+
+def filter_ready_execution_queue(
+    project_rows: list[dict[str, Any]],
+    selected_project_id: str,
+    ready_allowlist: list[str] | set[str] | None = None,
+    limit: int = 100,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Filter candidate project rows for autofill execution under P0-1 contract.
+
+    Rules:
+    1. Standalone / missing allowlist -> FAIL CLOSED.
+       Must not consume ordinary 待提交 rows with blank/unknown entries.
+    2. Given allowlist -> compute intersection with (项目ID == selected_project_id AND 状态 == '待提交').
+    3. Respect order in Sheet, bounded by min(len(ready_allowlist), limit).
+    4. Absolutely never backfill from other 待提交 rows not in the allowlist.
+    """
+    proj = str(selected_project_id or "").strip()
+    if not proj:
+        return [], "MISSING_PROJECT_ID: 必须指定 selected_project_id"
+
+    if ready_allowlist is None:
+        return [], "STANDALONE_FAIL_CLOSED: 待提交 ≠ Ready. 未提供 BacklinkOS Ready Allowlist，严禁直接消费未经验证的待提交行，请先执行 Phase C prepare_execution_batch"
+
+    norm_allowlist = set()
+    for item in ready_allowlist:
+        d = str(item or "").strip().lower()
+        if d.startswith("http://") or d.startswith("https://"):
+            d = urlparse(d).netloc
+        if d.startswith("www."):
+            d = d[4:]
+        d = d.split(":")[0].strip()
+        if d:
+            norm_allowlist.add(d)
+
+    if not norm_allowlist:
+        return [], "EMPTY_ALLOWLIST: 提供的 Ready Allowlist 为空，本次无待执行项"
+
+    max_items = min(len(norm_allowlist), limit if limit > 0 else 100)
+    selected_rows: list[dict[str, Any]] = []
+
+    for row in project_rows:
+        if len(selected_rows) >= max_items:
+            break
+        p_proj = str(row.get("项目ID") or "").strip()
+        p_status = str(row.get("状态") or "").strip()
+        if p_proj != proj or p_status != "待提交":
+            continue
+
+        raw_id = str(row.get("外链ID") or row.get("外链域名") or "").strip().lower()
+        if raw_id.startswith("http://") or raw_id.startswith("https://"):
+            raw_id = urlparse(raw_id).netloc
+        if raw_id.startswith("www."):
+            raw_id = raw_id[4:]
+        raw_id = raw_id.split(":")[0].strip()
+
+        if raw_id in norm_allowlist:
+            selected_rows.append(row)
+
+    return selected_rows, None
+
