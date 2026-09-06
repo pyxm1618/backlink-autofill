@@ -421,6 +421,11 @@ def _extract_verification_link(text: str, platform_domain: str) -> str | None:
         if not (is_platform_host or is_esp_host):
             continue
 
+        # 3. 严格排除普通 platform homepage / root URL (path 为空或 '/' 且无 query)
+        # 普通主页绝不能仅靠周边 ±120 字符中的 verification cue 成为验证候选！
+        if is_platform_host and parsed.path.strip("/") == "" and not parsed.query:
+            continue
+
         has_url_cue = any(cue in url_lower for cue in _VERIFICATION_CUES)
         has_context_cue = any(cue in context_lower for cue in _VERIFICATION_CUES)
 

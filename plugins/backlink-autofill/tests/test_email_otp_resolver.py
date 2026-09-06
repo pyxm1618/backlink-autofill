@@ -680,6 +680,195 @@ class EmailOtpResolverTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_extract_verification_link_ignores_homepage_near_verify_and_selects_real_esp_link(self):
+        """P0-3: homepage 在 verify 文案附近但真正 ESP link 在后面的回归测试"""
+        from email_otp_resolver import _extract_verification_link
+
+        platform = "foundrlist.com"
+        # homepage 紧挨着 verify 文案，但真正的 ESP 验证链接在后面
+        email_text = (
+            "Please verify your account with FoundrList. Visit our homepage at https://foundrlist.com "
+            "for instructions, or click your personal link to verify: "
+            "https://click.postmarkapp.com/track/real_magic_token_999"
+        )
+        link = _extract_verification_link(email_text, platform)
+        self.assertEqual(link, "https://click.postmarkapp.com/track/real_magic_token_999")
+
+    def test_resolve_email_magic_link_rejects_unverified_true_query(self):
+        """P0-3: ?unverified=true 必须被 reject，不得被 substring 误判为 verified=true"""
+        import tempfile
+        import threading
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from functools import partial
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            html_file = tmp_dir / "landing.html"
+            html_file.write_text("<!DOCTYPE html><html><body><h1>Account Status</h1></body></html>", encoding="utf-8")
+            handler = partial(SimpleHTTPRequestHandler, directory=str(tmp_dir))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            port = server.server_port
+            unverified_url = f"http://127.0.0.1:{port}/landing.html?unverified=true"
+
+            try:
+                profile = tmp_dir / "profile"
+                with browser_runtime.BrowserRuntime(
+                    profile_dir=profile,
+                    browser_channel="chromium",
+                    allow_local_fallback=True,
+                ) as rt:
+                    rt.navigate(f"http://127.0.0.1:{port}/landing.html")
+                    with self.assertRaises(browser_runtime.BrowserRuntimeError) as ctx:
+                        rt.resolve_email_magic_link(
+                            target_id="",
+                            magic_link=unverified_url,
+                            platform_domain=f"127.0.0.1:{port}",
+                        )
+                    # 必须被拒绝 (EXPIRED_OR_INVALID 或 UNCONFIRMED)，绝不可成功
+                    self.assertIn(ctx.exception.code, ("MAGIC_LINK_EXPIRED_OR_INVALID", "MAGIC_LINK_UNCONFIRMED"))
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_resolve_email_magic_link_rejects_invalid_and_expired_paths(self):
+        """P0-3: /invalid 与 /expired 等明确路径必须被 reject"""
+        import tempfile
+        import threading
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from functools import partial
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            class InvalidExpiredHandler(SimpleHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    body = b"<!DOCTYPE html><html><body>Invalid or expired token page</body></html>"
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), InvalidExpiredHandler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            port = server.server_port
+
+            try:
+                profile = tmp_dir / "profile"
+                with browser_runtime.BrowserRuntime(
+                    profile_dir=profile,
+                    browser_channel="chromium",
+                    allow_local_fallback=True,
+                ) as rt:
+                    # 1. /invalid reject
+                    with self.assertRaises(browser_runtime.BrowserRuntimeError) as ctx1:
+                        rt.resolve_email_magic_link(
+                            target_id="",
+                            magic_link=f"http://127.0.0.1:{port}/invalid",
+                            platform_domain=f"127.0.0.1:{port}",
+                        )
+                    self.assertEqual(ctx1.exception.code, "MAGIC_LINK_EXPIRED_OR_INVALID")
+
+                    # 2. /expired reject
+                    with self.assertRaises(browser_runtime.BrowserRuntimeError) as ctx2:
+                        rt.resolve_email_magic_link(
+                            target_id="",
+                            magic_link=f"http://127.0.0.1:{port}/expired",
+                            platform_domain=f"127.0.0.1:{port}",
+                        )
+                    self.assertEqual(ctx2.exception.code, "MAGIC_LINK_EXPIRED_OR_INVALID")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_resolve_email_magic_link_email_otp_to_generic_homepage_rejected(self):
+        """P0-3: EMAIL_OTP -> generic homepage 必须被 reject，单纯 stopped=True -> blocker=None 不得判成功"""
+        import tempfile
+        import threading
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from functools import partial
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            index_html = tmp_dir / "index.html"
+            # 泛型主页：无已登录 session，无业务 continuation
+            index_html.write_text("<!DOCTYPE html><html><body><h1>Welcome to Platform</h1><p>Public landing page</p></body></html>", encoding="utf-8")
+            handler = partial(SimpleHTTPRequestHandler, directory=str(tmp_dir))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            port = server.server_port
+
+            try:
+                profile = tmp_dir / "profile"
+                with browser_runtime.BrowserRuntime(
+                    profile_dir=profile,
+                    browser_channel="chromium",
+                    allow_local_fallback=True,
+                ) as rt:
+                    rt.navigate(f"http://127.0.0.1:{port}/index.html")
+                    # 模拟此前处于 EMAIL_OTP blocker
+                    rt._stopped_for_human = True
+                    rt._last_blocker = {"code": "EMAIL_OTP", "reason": "Email verification code required"}
+
+                    # 导航后进入了泛型未登录首页，无 continuation 证据
+                    with self.assertRaises(browser_runtime.BrowserRuntimeError) as ctx:
+                        rt.resolve_email_magic_link(
+                            target_id="",
+                            magic_link=f"http://127.0.0.1:{port}/",
+                            platform_domain=f"127.0.0.1:{port}",
+                        )
+                    self.assertEqual(ctx.exception.code, "MAGIC_LINK_UNCONFIRMED")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_resolve_email_magic_link_email_otp_to_verified_continuation_accepted(self):
+        """P0-3: EMAIL_OTP -> verified continuation (进入后续流程或带 session) 成功 accept"""
+        import tempfile
+        import threading
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from functools import partial
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            onboarding_html = tmp_dir / "onboarding.html"
+            # 后续流程：进入 /onboarding 且具有会话控制
+            onboarding_html.write_text("<!DOCTYPE html><html><body><h1>Project Onboarding</h1><button>Logout</button></body></html>", encoding="utf-8")
+            handler = partial(SimpleHTTPRequestHandler, directory=str(tmp_dir))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            port = server.server_port
+
+            try:
+                profile = tmp_dir / "profile"
+                with browser_runtime.BrowserRuntime(
+                    profile_dir=profile,
+                    browser_channel="chromium",
+                    allow_local_fallback=True,
+                ) as rt:
+                    rt.navigate(f"http://127.0.0.1:{port}/onboarding.html")
+                    # 模拟此前处于 EMAIL_OTP blocker
+                    rt._stopped_for_human = True
+                    rt._last_blocker = {"code": "EMAIL_OTP", "reason": "Email verification code required"}
+
+                    res = rt.resolve_email_magic_link(
+                        target_id="",
+                        magic_link=f"http://127.0.0.1:{port}/onboarding.html",
+                        platform_domain=f"127.0.0.1:{port}",
+                    )
+                    self.assertTrue(res["ok"])
+                    self.assertEqual(res["action"], "MAGIC_LINK_RESOLVED")
+                    self.assertTrue(res["verification_succeeded"])
+                    self.assertEqual(res["safe_landed_domain"], "127.0.0.1")
+                    self.assertFalse(res["stopped_for_human"])
+            finally:
+                server.shutdown()
+                server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

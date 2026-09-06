@@ -861,8 +861,8 @@ def validate_execution_start(
 
     # 3. Project 状态与 resume_same_attempt 语义判定
     if not resume_same_attempt:
-        # Normal Start: 要求严格为 '待提交' (或初始未置状态)
-        if current_status and current_status != "待提交":
+        # Normal Start: 要求严格为 '待提交' (blank 也拒绝)
+        if current_status != "待提交":
             reason = f"项目当前状态为 {current_status!r}，非待提交状态不可启动新执行"
             mutation = build_project_row_update(
                 status=current_status if current_status in SHEET_TO_INTERNAL else "失败",

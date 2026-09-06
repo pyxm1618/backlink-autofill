@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 from playwright.sync_api import BrowserContext, Locator, Page, Playwright, sync_playwright
@@ -391,6 +391,7 @@ class BrowserRuntime:
         self.is_external_cdp: bool = False
         self.target_id: str | None = None
         self._stopped_for_human: bool = False
+        self._last_blocker: dict[str, str] | None = None
         self._playwright: Playwright | None = None
         self._browser = None
         self._context: BrowserContext | None = None
@@ -557,6 +558,7 @@ class BrowserRuntime:
             snapshot = snapshot_page(self.page)
             if snapshot.get("human_blocker"):
                 self._stopped_for_human = True
+                self._last_blocker = snapshot.get("human_blocker")
             return snapshot
 
         try:
@@ -570,6 +572,7 @@ class BrowserRuntime:
         snapshot = snapshot_page(self.page)
         if snapshot.get("human_blocker"):
             self._stopped_for_human = True
+            self._last_blocker = snapshot.get("human_blocker")
         return snapshot
 
     def inspect(self, url: str) -> dict[str, Any]:
@@ -784,6 +787,7 @@ class BrowserRuntime:
             current_page = snapshot_page(self.page)
             if current_page.get("human_blocker"):
                 self._stopped_for_human = True
+                self._last_blocker = current_page.get("human_blocker")
                 return {
                     "ok": True,
                     "actions": evidence,
@@ -883,6 +887,7 @@ class BrowserRuntime:
             "stopped_for_human": self._stopped_for_human,
         }
 
+
     def resolve_email_magic_link(self, target_id: str, magic_link: str, platform_domain: str) -> dict[str, Any]:
         """Navigate to verified email Magic Link and confirm platform identity closure.
 
@@ -891,9 +896,11 @@ class BrowserRuntime:
         - Enforces initial DNS boundary check before navigating: host must be platform domain or approved ESP.
         - Enforces two-layer safety: verifies closure does not land on protected primary IdP.
         - Strictly decouples Safe Navigation / Platform Closure from Verification Success:
-          * Detects expired / invalid link states and raises MAGIC_LINK_EXPIRED_OR_INVALID (process error).
-          * Auxiliary signals (/dashboard, /welcome, Logout) alone do NOT prove success.
-          * Requires explicit verification success evidence or proven blocker->verified continuation.
+          * Query validation uses parse_qs for exact key/value matching (no substring containment).
+          * Rejects invalid/expired paths (/invalid, /expired, etc.) and unverified parameters.
+          * Blocker-cleared transition strictly requires prior blocker to be EMAIL_OTP and
+            requires positive continuation evidence (generic homepage is rejected).
+          * Plain stopped=True -> blocker=None alone is NEVER considered verification success.
           * Lacking positive proof raises MAGIC_LINK_UNCONFIRMED.
         """
         from email_otp_resolver import is_allowed_initial_magic_link_host, validate_magic_link_closure
@@ -914,7 +921,13 @@ class BrowserRuntime:
                 f"Initial magic link host {initial_host} is not permitted for target platform {platform_domain}",
             )
 
-        prior_stopped = bool(self._stopped_for_human)
+        prior_blocker = self._last_blocker
+        if not prior_blocker and self.page:
+            try:
+                prior_blocker = snapshot_page(self.page).get("human_blocker")
+            except Exception:
+                prior_blocker = None
+        prior_is_email_otp = bool(prior_blocker and prior_blocker.get("code") == "EMAIL_OTP")
 
         try:
             self.page.goto(clean_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
@@ -933,37 +946,69 @@ class BrowserRuntime:
         current_snapshot = snapshot_page(self.page)
         body_lower = (current_snapshot.get("body_excerpt") or "").lower()
         parsed_final = urlparse(final_url)
-        final_query = parsed_final.query.lower()
         final_path = parsed_final.path.lower()
+        path_segments = [s for s in final_path.split("/") if s]
 
-        # 1. 检查是否为过期或失效链接 (MAGIC_LINK_EXPIRED_OR_INVALID)
-        expired_invalid_url_tokens = (
-            "token-expired", "link-expired", "token_expired", "link_expired",
-            "already-used", "already_used", "invalid-token", "invalid_token",
-            "error=expired", "error=invalid", "status=invalid",
-        )
+        # 1. 明确的 invalid / expired 路径拦截 (/invalid, /expired 等)
+        invalid_expired_path_tokens = {"invalid", "expired", "token-expired", "link-expired", "already-used", "link-invalid", "token-invalid"}
+        if any(seg in invalid_expired_path_tokens for seg in path_segments) or any(
+            p in final_path for p in ("/invalid", "/expired", "/token-expired", "/link-expired", "/already-used")
+        ):
+            raise BrowserRuntimeError(
+                "MAGIC_LINK_EXPIRED_OR_INVALID",
+                f"Magic link reached invalid or expired path: {final_path}",
+            )
+
+        # 2. Query 严格使用 parse_qs 校验 (拒绝 substring 假匹配，拦截 unverified=true 等)
+        query_params = parse_qs(parsed_final.query)
+        reject_query_keys = {"error", "expired", "invalid", "unverified", "not_verified"}
+        for qk, qvals in query_params.items():
+            qk_lower = qk.lower()
+            if qk_lower in reject_query_keys:
+                raise BrowserRuntimeError(
+                    "MAGIC_LINK_EXPIRED_OR_INVALID",
+                    f"Magic link query parameter indicates invalid or unverified status: {qk}",
+                )
+            if qk_lower == "status" and any(v.lower() in ("expired", "invalid", "unverified", "failed") for v in qvals):
+                raise BrowserRuntimeError(
+                    "MAGIC_LINK_EXPIRED_OR_INVALID",
+                    "Magic link query status indicates expired or invalid",
+                )
+
+        # 检查 DOM 文本中明确的失效/过期短语
         expired_invalid_dom_phrases = (
             "link has expired", "token has expired", "link is expired", "link expired",
             "magic link expired", "link is invalid", "invalid verification link",
             "token is invalid", "invalid token", "link has already been used",
             "already been used", "link already used", "this link is no longer valid",
         )
-        if any(token in f"{final_path}?{final_query}" for token in expired_invalid_url_tokens) or any(phrase in body_lower for phrase in expired_invalid_dom_phrases):
+        if any(phrase in body_lower for phrase in expired_invalid_dom_phrases):
             raise BrowserRuntimeError(
                 "MAGIC_LINK_EXPIRED_OR_INVALID",
                 "Magic link has expired, is invalid, or has already been used",
             )
 
-        # 2. 检查正面验证成功证据 (Positive Verification Evidence)
-        # 注意：/dashboard, /welcome, /onboarding, Logout 仅为辅助信号，不得单独判定为成功！
-        has_explicit_url_success = any(
-            token in final_query for token in (
-                "verify=true", "verified=true", "verify=1", "verified=1",
-                "status=verified", "success=verified", "confirmed=true", "email_verified=true"
-            )
-        ) or any(
-            seg in final_path for seg in ("/verification-success", "/email-confirmed", "/account-verified", "/confirm-success")
-        )
+        # 3. 检查正面验证成功证据 (Positive Verification Evidence)
+        SUCCESS_QUERY_KEYS = {
+            "verified": {"true", "1", "yes", "success"},
+            "verify": {"true", "1", "yes", "success"},
+            "confirmed": {"true", "1", "yes", "success"},
+            "confirm": {"true", "1", "yes", "success"},
+            "email_verified": {"true", "1", "yes", "success"},
+            "status": {"verified", "confirmed", "success"},
+            "auth": {"success", "verified"},
+            "success": {"true", "1", "verified"},
+        }
+        has_explicit_url_success = False
+        for qk, qvals in query_params.items():
+            qk_lower = qk.lower()
+            if qk_lower in SUCCESS_QUERY_KEYS:
+                if any(v.lower() in SUCCESS_QUERY_KEYS[qk_lower] for v in qvals):
+                    has_explicit_url_success = True
+                    break
+
+        if any(seg in final_path for seg in ("/verification-success", "/email-confirmed", "/account-verified", "/confirm-success")):
+            has_explicit_url_success = True
 
         explicit_dom_success_phrases = (
             "email verified", "email has been verified", "email successfully verified",
@@ -973,22 +1018,41 @@ class BrowserRuntime:
         )
         has_explicit_dom_success = any(phrase in body_lower for phrase in explicit_dom_success_phrases)
 
-        # 状态转换：若此前处于 blocker，且当前 blocker 消除并进入平台正常状态
+        # 4. blocker-cleared transition：必须确认 prior blocker 是 EMAIL_OTP，且具备可信 continuation 证据
+        path_stripped = final_path.strip("/")
+        has_session_markers = any(cue in body_lower for cue in ("logout", "sign out", "my account", "sign-out", "log-out"))
+        is_generic_homepage = (path_stripped == "" and not parsed_final.query)
+
+        continuation_path_cues = (
+            "/submit", "/new", "/dashboard", "/onboarding", "/app",
+            "/settings", "/profile", "/create", "/projects", "/listing", "/welcome"
+        )
+        has_continuation_path = any(cue in final_path for cue in continuation_path_cues)
+        has_unauthenticated_cues = any(cue in body_lower for cue in ("please sign in", "please log in", "sign in to your account"))
+
+        is_verified_continuation = (
+            (has_continuation_path or has_session_markers)
+            and not is_generic_homepage
+            and not has_unauthenticated_cues
+            and not any(term in body_lower for term in ("invalid", "expired", "failed to verify", "error"))
+        )
+
         has_blocker_cleared_transition = (
-            prior_stopped
+            prior_is_email_otp
             and not current_snapshot.get("human_blocker")
-            and not any(term in body_lower for term in ("error", "invalid", "expired", "failed to verify"))
+            and is_verified_continuation
         )
 
         if not (has_explicit_url_success or has_explicit_dom_success or has_blocker_cleared_transition):
             raise BrowserRuntimeError(
                 "MAGIC_LINK_UNCONFIRMED",
-                "Magic link landed on platform but lacks definitive verification success evidence or blocker-cleared continuation",
+                "Magic link landed on platform but lacks definitive verification success evidence or verified continuation",
             )
 
         # 正面证据确凿，解除 human blocker 停顿
         if not current_snapshot.get("human_blocker"):
             self._stopped_for_human = False
+            self._last_blocker = None
 
         safe_landed_domain = (parsed_final.netloc or "").split(":")[0].lower()
 

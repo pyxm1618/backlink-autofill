@@ -591,7 +591,7 @@ class TestMasterGateProtection(unittest.TestCase):
                 str(cli_path),
                 "validate-execution-start",
                 "--project-row-json",
-                json.dumps({"项目ID": "p1", "外链ID": "good.com", "尝试次数": "0", "目标URL": "https://p1.com"}),
+                json.dumps({"项目ID": "p1", "外链ID": "good.com", "状态": "待提交", "尝试次数": "0", "目标URL": "https://p1.com"}),
                 "--master-rows-json",
                 json.dumps([{
                     "外链ID": "good.com",
@@ -696,6 +696,28 @@ class TestMasterGateProtection(unittest.TestCase):
             "外链ID": "example.com", "平台域名": "example.com", "基础状态": "候选", "提交入口": "https://auth.example.com/submit"
         }])
         self.assertTrue(res_sub["eligible"])
+
+    def test_validate_execution_start_rejects_blank_project_status(self):
+        """P0-Gate: normal start 模式下 project.状态 为空/空格/缺失时必须严格拒绝"""
+        from execution_state import validate_execution_start
+
+        master = [{"外链ID": "valid.com", "平台域名": "valid.com", "基础状态": "候选", "提交入口": "https://valid.com/submit"}]
+
+        # 1. 状态为空字符串
+        res_empty = validate_execution_start({"外链ID": "valid.com", "状态": "", "尝试次数": "0"}, master)
+        self.assertFalse(res_empty["eligible"])
+        self.assertEqual(res_empty["proposed_status"], "失败")
+        self.assertIn("非待提交状态不可启动新执行", res_empty["reason"])
+
+        # 2. 状态为纯空格
+        res_spaces = validate_execution_start({"外链ID": "valid.com", "状态": "   ", "尝试次数": "0"}, master)
+        self.assertFalse(res_spaces["eligible"])
+        self.assertEqual(res_spaces["proposed_status"], "失败")
+
+        # 3. 状态字段完全缺失
+        res_missing = validate_execution_start({"外链ID": "valid.com", "尝试次数": "0"}, master)
+        self.assertFalse(res_missing["eligible"])
+        self.assertEqual(res_missing["proposed_status"], "失败")
 
     def test_validate_execution_start_terminal_project_status(self):
         """P0-Gate: 正常启动时 project.状态 必须为 待提交；terminal 状态拒绝启动"""
