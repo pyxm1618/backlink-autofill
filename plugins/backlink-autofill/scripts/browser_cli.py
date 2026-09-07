@@ -123,6 +123,13 @@ def build_parser() -> argparse.ArgumentParser:
     val_queue_parser.add_argument("--ready-allowlist-json")
     val_queue_parser.add_argument("--limit", type=int, default=100)
 
+    recheck_parser = subparsers.add_parser("recheck-evaluate")
+    recheck_parser.add_argument("--project-row-json", required=True)
+    recheck_parser.add_argument("--recheck-evidence-json", required=True)
+    recheck_parser.add_argument("--current-date")
+    recheck_parser.add_argument("--now-iso")
+    recheck_parser.add_argument("--master-row-json")
+
     otp_parser = subparsers.add_parser("resolve-email-otp")
     _add_common(otp_parser)
     otp_parser.add_argument("--stdin", action="store_true", required=True, help="read OTP ephemerally from stdin")
@@ -353,6 +360,28 @@ def main() -> int:
                 "count": len(filtered_rows),
                 "selected_rows": filtered_rows,
             }
+
+        elif args.command == "recheck-evaluate":
+            try:
+                project_row = json.loads(args.project_row_json)
+                recheck_evidence = json.loads(args.recheck_evidence_json)
+                master_row = json.loads(args.master_row_json) if args.master_row_json else None
+            except json.JSONDecodeError:
+                return _emit_error("INVALID_JSON", "project-row-json, recheck-evidence-json and master-row-json must be valid JSON")
+            if not isinstance(project_row, dict):
+                return _emit_error("INVALID_PROJECT_ROW", "project-row-json must be a JSON object")
+            if not isinstance(recheck_evidence, dict):
+                return _emit_error("INVALID_RECHECK_EVIDENCE", "recheck-evidence-json must be a JSON object")
+            if master_row is not None and not isinstance(master_row, dict):
+                return _emit_error("INVALID_MASTER_ROW", "master-row-json must be a JSON object")
+
+            result = ProductionSheetGate.evaluate_post_submit_recheck(
+                project_row=project_row,
+                recheck_evidence=recheck_evidence,
+                current_date=args.current_date,
+                now_iso=args.now_iso,
+                master_row=master_row,
+            )
 
         elif args.command == "resolve-email-otp":
             if not args.target_id:

@@ -711,6 +711,23 @@ class ProductionSheetGate:
             limit=limit,
         )
 
+    @staticmethod
+    def evaluate_post_submit_recheck(
+        project_row: dict[str, Any],
+        recheck_evidence: dict[str, Any],
+        current_date: str | None = None,
+        now_iso: str | None = None,
+        master_row: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate post-submit recheck observation and propose verifiable Sheet mutations."""
+        return evaluate_post_submit_recheck(
+            project_row=project_row,
+            recheck_evidence=recheck_evidence,
+            current_date=current_date,
+            now_iso=now_iso,
+            master_row=master_row,
+        )
+
 
 def enrich_master_facts(
     prior_facts: dict[str, Any] | None,
@@ -1079,6 +1096,7 @@ def build_project_row_update(
     target_url: str = "",
     attempt_count: int | None = None,
     now_iso: str | None = None,
+    evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a validated project row mutation payload adhering to the contract.
 
@@ -1088,7 +1106,7 @@ def build_project_row_update(
     if status not in SHEET_TO_INTERNAL:
         raise ValueError(f"invalid sheet status: {status!r}")
 
-    sanitized_url = sanitize_result_url(raw_result_url)
+    sanitized_url = sanitize_result_url(raw_result_url, evidence=evidence)
     updated_evidence = str(evidence_summary or "").strip()
 
     if raw_result_url and not sanitized_url:
@@ -1438,4 +1456,181 @@ def filter_ready_execution_queue(
             selected_rows.append(row)
 
     return selected_rows, None
+
+
+RECHECKABLE_STATUSES = {"已提交", "审核中", "已排期"}
+
+
+def evaluate_post_submit_recheck(
+    project_row: dict[str, Any],
+    recheck_evidence: dict[str, Any],
+    current_date: str | None = None,
+    now_iso: str | None = None,
+    master_row: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate post-submit recheck observation and propose verifiable Sheet mutations.
+
+    Contract:
+    - Purely read-only post-submit verification (forbidden_actions includes submit).
+    - Status transitions strictly driven by direct verifiable evidence:
+      1. 已排期: Future scheduled date must remain 已排期.
+      2. 已上线: Requires BOTH verified public access (not 404, no auth) AND verified project identity.
+                 Dashboard claiming 'live' without verified public listing URL is rejected and remains 审核中.
+      3. 结果链接: Sanitized public URL written only when verified live; unverified or 404/auth URLs forbidden.
+      4. 实测链接属性: Master attribute written ONLY when listing is verified live and DOM rel inspected.
+                      If rel is uninspected (None), remains empty string, never guess.
+    """
+    if not isinstance(project_row, dict):
+        raise ValueError("project_row must be a dictionary")
+    if not isinstance(recheck_evidence, dict):
+        raise ValueError("recheck_evidence must be a dictionary")
+
+    current_status = str(project_row.get("状态") or "").strip()
+    if current_status not in RECHECKABLE_STATUSES:
+        return {
+            "ok": False,
+            "eligible": False,
+            "reason": f"当前状态 '{current_status}' 不属于可复核范围（仅支持 {sorted(RECHECKABLE_STATUSES)}）",
+            "is_readonly": True,
+            "allowed_actions": ["inspect", "navigate"],
+            "forbidden_actions": ["submit", "final_submit", "click_submit"],
+            "current_status": current_status,
+            "proposed_status": current_status,
+            "project_mutation": None,
+            "master_mutation": None,
+        }
+
+    today = current_date or time.strftime("%Y-%m-%d", time.gmtime())
+    now_iso = now_iso or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    target_url = str(project_row.get("目标URL") or "").strip()
+
+    raw_attempt = project_row.get("尝试次数")
+    try:
+        attempt_count = int(raw_attempt) if raw_attempt is not None and str(raw_attempt).strip() != "" else 0
+    except (ValueError, TypeError):
+        attempt_count = 0
+
+    dashboard_status = str(recheck_evidence.get("dashboard_status") or "").strip().lower()
+    sched_date = str(recheck_evidence.get("scheduled_date") or "").strip()
+    public_url = recheck_evidence.get("public_listing_url")
+    public_access_verified = bool(recheck_evidence.get("public_access_verified", False))
+    listing_identity_verified = bool(recheck_evidence.get("listing_identity_verified", False))
+    live_dom_rel = recheck_evidence.get("live_dom_rel")
+
+    # 1. 验证是否可判为 已上线
+    sanitized_public_url = sanitize_result_url(
+        public_url,
+        evidence=recheck_evidence,
+        public_access_verified=public_access_verified,
+        listing_identity_verified=listing_identity_verified,
+    )
+    is_live = bool(sanitized_public_url and public_access_verified and listing_identity_verified)
+
+    master_mutation: dict[str, Any] | None = None
+
+    if is_live:
+        proposed_status = "已上线"
+        proposed_result_url = sanitized_public_url
+        reason = "复核已验证公开上线页面"
+        evidence_summary = f"[公开上线页已验证: {sanitized_public_url}]"
+
+        # Master mutation: 仅在 DOM rel 实际检查且非 None 时填入，否则留空
+        master_mutation_payload = {
+            "实测链接属性": "",
+            "最后验证时间": now_iso,
+        }
+        master_evidence = {"listing_live": True}
+        if live_dom_rel is not None:
+            rel_lower = str(live_dom_rel).lower()
+            if "nofollow" in rel_lower:
+                attr = "Nofollow"
+            elif "ugc" in rel_lower:
+                attr = "UGC"
+            elif "sponsored" in rel_lower:
+                attr = "Sponsored"
+            else:
+                attr = "Follow"
+            master_mutation_payload["实测链接属性"] = attr
+            master_evidence["live_dom_rel"] = live_dom_rel
+
+        master_mutation = ProductionSheetGate.validate_master_mutation(
+            evidence=master_evidence,
+            prior_facts=master_row,
+            proposed=master_mutation_payload,
+        )
+
+    elif sched_date and sched_date > today:
+        # 已排期且未到期
+        proposed_status = "已排期"
+        proposed_result_url = ""
+        reason = f"排期发布中（排期日期: {sched_date}）"
+        evidence_summary = f"[未到排期日期: {sched_date}]"
+        master_mutation = {
+            "实测链接属性": "",
+            "最后验证时间": now_iso,
+        }
+
+    else:
+        # 未上线，且未排期在未来
+        proposed_result_url = ""
+        claims_live = dashboard_status in {"live", "published", "active", "approved", "已发布", "已上线"}
+        if claims_live:
+            # 仅 dashboard 声称上线，但无公开 URL 或未验证公开访问 -> 拒绝已上线，维持/转为 审核中
+            proposed_status = "审核中"
+            reason = "Dashboard 显示已发布，但未验证有效公开上线页，维持审核中"
+            evidence_summary = f"[Dashboard 声明: {dashboard_status}，无有效公开链接]"
+        elif any(kw in dashboard_status for kw in ("review", "pending", "moderation", "审核")):
+            proposed_status = "审核中"
+            reason = "复核确认处于平台审核队列中"
+            evidence_summary = f"[平台审核状态: {dashboard_status}]"
+        elif current_status == "已排期" and sched_date and sched_date <= today:
+            # 排期已到但未见上线页
+            proposed_status = "审核中"
+            reason = f"排期已到期（{sched_date}）但未验证公开上线页，转入审核复核"
+            evidence_summary = "[排期到期未见公开页面]"
+        else:
+            proposed_status = current_status
+            reason = str(project_row.get("原因/备注") or "复核未发现状态变化")
+            evidence_summary = str(project_row.get("证据摘要") or "")
+
+        master_mutation = {
+            "实测链接属性": "",
+            "最后验证时间": now_iso,
+        }
+
+    # 通过 ProductionSheetGate 校验 Project mutation
+    evidence_for_gate = {
+        "platform_status_text": dashboard_status,
+        "scheduled_date": sched_date if proposed_status == "已排期" else None,
+        "public_listing_url": proposed_result_url,
+        "public_listing_verified": is_live,
+        "public_access_verified": public_access_verified,
+        "listing_identity_verified": listing_identity_verified,
+    }
+    raw_project_update = build_project_row_update(
+        status=proposed_status,
+        raw_result_url=proposed_result_url,
+        evidence_summary=evidence_summary,
+        reason=reason,
+        target_url=target_url,
+        attempt_count=attempt_count,
+        now_iso=now_iso,
+        evidence=evidence_for_gate,
+    )
+    validated_project_mutation = ProductionSheetGate.validate_project_mutation(
+        evidence=evidence_for_gate,
+        proposed=raw_project_update,
+    )
+
+    return {
+        "ok": True,
+        "eligible": True,
+        "is_readonly": True,
+        "allowed_actions": ["inspect", "navigate"],
+        "forbidden_actions": ["submit", "final_submit", "click_submit"],
+        "current_status": current_status,
+        "proposed_status": proposed_status,
+        "project_mutation": validated_project_mutation,
+        "master_mutation": master_mutation,
+    }
 

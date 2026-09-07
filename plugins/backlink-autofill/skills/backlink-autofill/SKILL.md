@@ -406,6 +406,23 @@ The validator strictly enforces direct observations only (Invariant 1 & 6):
 
 Prior research, discovery provenance (e.g. `BacklinkOS/已确认免费Follow`), and historical notes must NEVER populate `实测*` fields. Unknown facts remain blank; never guess. Project-specific status or result URL must never leak to other projects.
 
+### 11a. Post-submit Recheck Verification (Evidence-Driven State Transitions)
+
+When verifying existing rows in `已提交`, `审核中`, or `已排期` status:
+```bash
+python3 plugins/backlink-autofill/scripts/browser_cli.py recheck-evaluate \
+  --project-row-json '<project_row_json>' \
+  --recheck-evidence-json '<recheck_evidence_json>' \
+  [--current-date 'YYYY-MM-DD'] \
+  [--master-row-json '<master_row_json>']
+```
+Strict Recheck Rules:
+1. **Read-only**: Recheck NEVER triggers a new submission or form submit action (`forbidden_actions: ["submit"]`).
+2. **`已排期` stability**: If a scheduled launch date exists in the future (`scheduled_date > current_date`), status MUST remain `已排期`.
+3. **`已上线` criteria**: Requires BOTH verified public access (HTTP 200, non-404, no auth wall) AND verified project identity. A dashboard claiming "live" without a verified public listing URL is rejected and remains `审核中`.
+4. **`结果链接`**: Written only when verified live. Never write unverified, 404, or private dashboard/admin URLs.
+5. **`实测链接属性`**: In `外链总表`, written ONLY after inspecting the live DOM `<a>` tag `rel` attribute (`Follow`, `Nofollow`, `UGC`, `Sponsored`). If uninspected (`None`), it MUST remain empty string, never guess.
+
 ### 12. Save/refresh domain recipe
 
 After a verified stable flow, save selectors/navigation/success indicators. Never store password/token/secret/session credential, generated password, or project-specific copy inside a recipe.
