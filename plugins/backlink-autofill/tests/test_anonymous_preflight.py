@@ -120,6 +120,74 @@ class TestAnonymousSubmissionPreflight(unittest.TestCase):
         )
         self.assertEqual(res["verdict"], "UNKNOWN")
 
+    def test_regression_1_empty_page_evidence_returns_unknown(self):
+        """Regression 1: page_evidence={} -> UNKNOWN"""
+        res = detect_anonymous_submission_preflight(
+            page_evidence={},
+            project_row={"项目ID": "quick-iching", "状态": "待提交"},
+            project_name=self.project_name,
+            canonical_url=self.canonical_url,
+        )
+        self.assertEqual(res["verdict"], "UNKNOWN")
+
+    def test_regression_2_missing_requires_login_returns_unknown(self):
+        """Regression 2: is_anonymous_form=True 但 requires_login 缺失 -> UNKNOWN"""
+        res = detect_anonymous_submission_preflight(
+            page_evidence={"is_anonymous_form": True},
+            project_row={"项目ID": "quick-iching", "状态": "待提交"},
+            project_name=self.project_name,
+            canonical_url=self.canonical_url,
+        )
+        self.assertEqual(res["verdict"], "UNKNOWN")
+
+    def test_regression_3_failed_status_rejects_safe(self):
+        """Regression 3: 状态=失败 -> 不得 SAFE (必须 fail-closed 为 UNKNOWN)"""
+        page_evidence = {"is_anonymous_form": True, "requires_login": False}
+        res = detect_anonymous_submission_preflight(
+            page_evidence=page_evidence,
+            project_row={"项目ID": "quick-iching", "状态": "失败"},
+            project_name=self.project_name,
+            canonical_url=self.canonical_url,
+        )
+        self.assertNotEqual(res["verdict"], "SAFE")
+        self.assertEqual(res["verdict"], "UNKNOWN")
+
+    def test_regression_4_needs_human_without_uncertain_cues_rejects_safe(self):
+        """Regression 4: 状态=需人工但无 uncertain 文案 -> 不得 SAFE"""
+        page_evidence = {"is_anonymous_form": True, "requires_login": False}
+        res = detect_anonymous_submission_preflight(
+            page_evidence=page_evidence,
+            project_row={"项目ID": "quick-iching", "状态": "需人工", "原因/备注": "验证码阻塞"},
+            project_name=self.project_name,
+            canonical_url=self.canonical_url,
+        )
+        self.assertNotEqual(res["verdict"], "SAFE")
+        self.assertEqual(res["verdict"], "UNKNOWN")
+
+    def test_regression_5_in_progress_status_can_be_safe(self):
+        """Regression 5: 状态=处理中且页面证据完整 -> 可 SAFE"""
+        page_evidence = {"is_anonymous_form": True, "requires_login": False}
+        res = detect_anonymous_submission_preflight(
+            page_evidence=page_evidence,
+            project_row={"项目ID": "quick-iching", "状态": "处理中"},
+            project_name=self.project_name,
+            canonical_url=self.canonical_url,
+        )
+        self.assertEqual(res["verdict"], "SAFE")
+
+    def test_regression_6_public_search_unknown_returns_unknown(self):
+        """Regression 6: public search = UNKNOWN -> UNKNOWN (禁止当作没找到)"""
+        page_evidence = {"is_anonymous_form": True, "requires_login": False}
+        ambiguous_search_page = "<div>Welcome to search portal! Unstructured text.</div>"
+        res = detect_anonymous_submission_preflight(
+            page_evidence=page_evidence,
+            project_row={"项目ID": "quick-iching", "状态": "待提交"},
+            project_name=self.project_name,
+            canonical_url=self.canonical_url,
+            public_search_content=ambiguous_search_page,
+        )
+        self.assertEqual(res["verdict"], "UNKNOWN")
+
 
 if __name__ == "__main__":
     unittest.main()

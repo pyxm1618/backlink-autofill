@@ -335,23 +335,41 @@ def detect_anonymous_submission_preflight(
     canonical_url: str = "",
     public_search_content: Any = None,
 ) -> dict[str, Any]:
-    """Anonymous Submission Preflight.
+    """Anonymous Submission Preflight (Fail-Closed).
 
-    Minimal duplicate-detection and preflight for anonymous/free forms.
     Enforces:
-    1. If page requires login or is not an anonymous form, route back to account-based preflight.
-    2. If prior submission outcome was uncertain/ambiguous, halt for human review to prevent duplicate submits.
-    3. If project row indicates already submitted/scheduled/live, reject duplicate submit (FOUND).
-    4. If platform public search/listing content is readily available, inspect it for duplicates;
-       otherwise, safe to proceed without building universal public-search crawlers.
+    1. Page facts must explicitly satisfy:
+       - is_anonymous_form is True AND requires_login is False
+       - If requires_login is True or is_anonymous_form is False -> REQUIRES_LOGIN
+       - If these critical facts are missing or uncertain -> UNKNOWN (fail-closed, forbids Final Submit)
+    2. Project status:
+       - 已提交 / 审核中 / 已排期 / 已上线 -> FOUND (rejects duplicate submit)
+       - Prior uncertain outcome -> UNKNOWN (halts for human review)
+       - Allowed to proceed: 待提交 or 处理中 (normal in-progress execution)
+       - All other statuses (需人工, 失败, 不适用, blank/invalid) -> UNKNOWN (fail-closed)
+    3. Optional public search:
+       - If public_search_content provided:
+         - FOUND -> FOUND
+         - UNKNOWN -> UNKNOWN (forbids Final Submit; never treat UNKNOWN as not found)
+         - NOT_FOUND -> safe to proceed
     """
     if not isinstance(page_evidence, dict):
-        page_evidence = {}
+        return {
+            "verdict": "UNKNOWN",
+            "reason": "page_evidence must be a dictionary; fail closed",
+            "matched_identity": None,
+            "status_hint": None,
+            "scheduled_date": None,
+            "public_listing_url": None,
+        }
     if not isinstance(project_row, dict):
         project_row = {}
 
-    # 1. Check if login is required
-    if page_evidence.get("requires_login") is True or page_evidence.get("is_anonymous_form") is False:
+    # 1. Page facts validation
+    req_login = page_evidence.get("requires_login")
+    is_anon = page_evidence.get("is_anonymous_form")
+
+    if req_login is True or is_anon is False:
         return {
             "verdict": "REQUIRES_LOGIN",
             "reason": "Platform requires login or is not an anonymous submission form; defer to dashboard preflight",
@@ -361,7 +379,28 @@ def detect_anonymous_submission_preflight(
             "public_listing_url": None,
         }
 
-    # 2. Check for uncertain prior submission outcome
+    if is_anon is not True or req_login is not False:
+        return {
+            "verdict": "UNKNOWN",
+            "reason": "Missing or ambiguous page facts for anonymous form preflight; fail closed to prevent duplicate submit",
+            "matched_identity": None,
+            "status_hint": None,
+            "scheduled_date": None,
+            "public_listing_url": None,
+        }
+
+    # 2. Project status validation
+    current_status = str(project_row.get("状态") or "").strip()
+    if current_status in ("已提交", "审核中", "已排期", "已上线"):
+        return {
+            "verdict": "FOUND",
+            "reason": f"Project already submitted or live (current status: {current_status}); duplicate submission rejected",
+            "matched_identity": canonical_url or project_name,
+            "status_hint": current_status,
+            "scheduled_date": None,
+            "public_listing_url": None,
+        }
+
     notes_and_evidence = f"{project_row.get('原因/备注') or ''} {project_row.get('证据摘要') or ''}".lower()
     uncertain_cues = (
         "提交结果不确定",
@@ -382,26 +421,25 @@ def detect_anonymous_submission_preflight(
             "public_listing_url": None,
         }
 
-    # 3. Check if project row already shows prior submission/live state
-    current_status = str(project_row.get("状态") or "").strip()
-    if current_status in ("已提交", "审核中", "已排期", "已上线"):
+    if current_status not in ("待提交", "处理中"):
         return {
-            "verdict": "FOUND",
-            "reason": f"Project already submitted or live (current status: {current_status}); duplicate submission rejected",
-            "matched_identity": canonical_url or project_name,
-            "status_hint": current_status,
+            "verdict": "UNKNOWN",
+            "reason": f"Project status {current_status!r} is not eligible for anonymous submission; fail closed",
+            "matched_identity": None,
+            "status_hint": current_status or None,
             "scheduled_date": None,
             "public_listing_url": None,
         }
 
-    # 4. Optional: check readily available public search/listing content
+    # 3. Optional public search inspection
     if public_search_content is not None and public_search_content != "" and public_search_content != []:
         search_res = detect_existing_project_submission(
             content=public_search_content,
             project_name=project_name,
             canonical_url=canonical_url,
         )
-        if search_res.get("verdict") == "FOUND":
+        search_verdict = search_res.get("verdict")
+        if search_verdict == "FOUND":
             return {
                 "verdict": "FOUND",
                 "reason": f"Existing submission detected via public search: {search_res.get('reason')}",
@@ -410,8 +448,17 @@ def detect_anonymous_submission_preflight(
                 "scheduled_date": search_res.get("scheduled_date"),
                 "public_listing_url": search_res.get("public_listing_url"),
             }
+        elif search_verdict == "UNKNOWN":
+            return {
+                "verdict": "UNKNOWN",
+                "reason": f"Public search check result is ambiguous: {search_res.get('reason')}",
+                "matched_identity": None,
+                "status_hint": None,
+                "scheduled_date": None,
+                "public_listing_url": None,
+            }
 
-    # 5. Form is verified anonymous, no duplicate detected -> SAFE
+    # 4. Form is verified anonymous, eligible status, no duplicate detected -> SAFE
     return {
         "verdict": "SAFE",
         "reason": "Anonymous form preflight passed: verified anonymous form and no prior submission evidence found",
@@ -726,6 +773,19 @@ class ProductionSheetGate:
             current_date=current_date,
             now_iso=now_iso,
             master_row=master_row,
+        )
+
+    @staticmethod
+    def filter_recheck_queue(
+        project_rows: list[dict[str, Any]],
+        selected_project_id: str,
+        limit: int = 100,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Filter candidate project rows for post-submit recheck queue under strict contract."""
+        return filter_recheck_queue(
+            project_rows=project_rows,
+            selected_project_id=selected_project_id,
+            limit=limit,
         )
 
 
@@ -1461,6 +1521,39 @@ def filter_ready_execution_queue(
 RECHECKABLE_STATUSES = {"已提交", "审核中", "已排期"}
 
 
+def filter_recheck_queue(
+    project_rows: list[dict[str, Any]],
+    selected_project_id: str,
+    limit: int = 100,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Filter project rows for post-submit recheck under strict contract.
+
+    Contract:
+    1. selected_project_id required and strictly enforced (no cross-project leakage).
+    2. Only rows with status in ('已提交', '审核中', '已排期') are eligible.
+    3. Excludes '待提交', '失败', '不适用', '需人工', '已上线' etc.
+    4. Bounded by limit (default 100).
+    """
+    proj = str(selected_project_id or "").strip()
+    if not proj:
+        return [], "MISSING_PROJECT_ID: 必须指定 selected_project_id"
+
+    selected: list[dict[str, Any]] = []
+    max_items = limit if limit > 0 else 100
+
+    for row in project_rows:
+        if len(selected) >= max_items:
+            break
+        if not isinstance(row, dict):
+            continue
+        row_proj = str(row.get("项目ID") or "").strip()
+        row_status = str(row.get("状态") or "").strip()
+        if row_proj == proj and row_status in RECHECKABLE_STATUSES:
+            selected.append(row)
+
+    return selected, None
+
+
 def evaluate_post_submit_recheck(
     project_row: dict[str, Any],
     recheck_evidence: dict[str, Any],
@@ -1473,12 +1566,15 @@ def evaluate_post_submit_recheck(
     Contract:
     - Purely read-only post-submit verification (forbidden_actions includes submit).
     - Status transitions strictly driven by direct verifiable evidence:
-      1. 已排期: Future scheduled date must remain 已排期.
+      1. 已排期 stability: Future scheduled date OR absence of cancellation evidence must remain 已排期.
+         Pending / Review cannot overwrite an existing 已排期 fact without explicit schedule expiration or cancellation.
       2. 已上线: Requires BOTH verified public access (not 404, no auth) AND verified project identity.
                  Dashboard claiming 'live' without verified public listing URL is rejected and remains 审核中.
       3. 结果链接: Sanitized public URL written only when verified live; unverified or 404/auth URLs forbidden.
       4. 实测链接属性: Master attribute written ONLY when listing is verified live and DOM rel inspected.
-                      If rel is uninspected (None), remains empty string, never guess.
+                      If rel is uninspected (None), DO NOT include '实测链接属性' in mutation payload.
+                      Never overwrite historical facts with empty string.
+      5. ProductionSheetGate: All master mutations (including non-live/scheduled) must pass validate_master_mutation.
     """
     if not isinstance(project_row, dict):
         raise ValueError("project_row must be a dictionary")
@@ -1534,12 +1630,11 @@ def evaluate_post_submit_recheck(
         reason = "复核已验证公开上线页面"
         evidence_summary = f"[公开上线页已验证: {sanitized_public_url}]"
 
-        # Master mutation: 仅在 DOM rel 实际检查且非 None 时填入，否则留空
-        master_mutation_payload = {
-            "实测链接属性": "",
+        # P1 - 问题 2：仅当 live_dom_rel 实际检查且非 None 时包含 实测链接属性；否则不包含该 key，绝不覆盖历史事实！
+        master_mutation_payload: dict[str, Any] = {
             "最后验证时间": now_iso,
         }
-        master_evidence = {"listing_live": True}
+        master_evidence: dict[str, Any] = {"listing_live": True}
         if live_dom_rel is not None:
             rel_lower = str(live_dom_rel).lower()
             if "nofollow" in rel_lower:
@@ -1559,44 +1654,48 @@ def evaluate_post_submit_recheck(
             proposed=master_mutation_payload,
         )
 
-    elif sched_date and sched_date > today:
-        # 已排期且未到期
-        proposed_status = "已排期"
-        proposed_result_url = ""
-        reason = f"排期发布中（排期日期: {sched_date}）"
-        evidence_summary = f"[未到排期日期: {sched_date}]"
-        master_mutation = {
-            "实测链接属性": "",
-            "最后验证时间": now_iso,
-        }
-
     else:
-        # 未上线，且未排期在未来
+        # 未验证公开上线页
         proposed_result_url = ""
-        claims_live = dashboard_status in {"live", "published", "active", "approved", "已发布", "已上线"}
-        if claims_live:
-            # 仅 dashboard 声称上线，但无公开 URL 或未验证公开访问 -> 拒绝已上线，维持/转为 审核中
-            proposed_status = "审核中"
-            reason = "Dashboard 显示已发布，但未验证有效公开上线页，维持审核中"
-            evidence_summary = f"[Dashboard 声明: {dashboard_status}，无有效公开链接]"
-        elif any(kw in dashboard_status for kw in ("review", "pending", "moderation", "审核")):
-            proposed_status = "审核中"
-            reason = "复核确认处于平台审核队列中"
-            evidence_summary = f"[平台审核状态: {dashboard_status}]"
-        elif current_status == "已排期" and sched_date and sched_date <= today:
-            # 排期已到但未见上线页
+
+        # P1 - 问题 3：排期逻辑保全规则
+        if sched_date and sched_date > today:
+            proposed_status = "已排期"
+            reason = f"排期发布中（排期日期: {sched_date}）"
+            evidence_summary = f"[未到排期日期: {sched_date}]"
+        elif sched_date and sched_date <= today:
             proposed_status = "审核中"
             reason = f"排期已到期（{sched_date}）但未验证公开上线页，转入审核复核"
             evidence_summary = "[排期到期未见公开页面]"
+        elif current_status == "已排期":
+            # 原状态为 已排期，本次未取得新的 scheduled_date，无排期取消证据 -> 弱证据不得覆盖强证据，必须保持 已排期！
+            proposed_status = "已排期"
+            reason = str(project_row.get("原因/备注") or "排期发布中，本次复核维持已排期")
+            evidence_summary = str(project_row.get("证据摘要") or "[维持原有排期状态]")
         else:
-            proposed_status = current_status
-            reason = str(project_row.get("原因/备注") or "复核未发现状态变化")
-            evidence_summary = str(project_row.get("证据摘要") or "")
+            claims_live = dashboard_status in {"live", "published", "active", "approved", "已发布", "已上线"}
+            if claims_live:
+                proposed_status = "审核中"
+                reason = "Dashboard 显示已发布，但未验证有效公开上线页，维持审核中"
+                evidence_summary = f"[Dashboard 声明: {dashboard_status}，无有效公开链接]"
+            elif any(kw in dashboard_status for kw in ("review", "pending", "moderation", "审核")):
+                proposed_status = "审核中"
+                reason = "复核确认处于平台审核队列中"
+                evidence_summary = f"[平台审核状态: {dashboard_status}]"
+            else:
+                proposed_status = current_status
+                reason = str(project_row.get("原因/备注") or "复核未发现状态变化")
+                evidence_summary = str(project_row.get("证据摘要") or "")
 
-        master_mutation = {
-            "实测链接属性": "",
+        # P1 - 问题 2：non-live 分支的 master mutation 不包含 实测链接属性，且必须通过 ProductionSheetGate！
+        master_mutation_payload = {
             "最后验证时间": now_iso,
         }
+        master_mutation = ProductionSheetGate.validate_master_mutation(
+            evidence={"listing_live": False},
+            prior_facts=master_row,
+            proposed=master_mutation_payload,
+        )
 
     # 通过 ProductionSheetGate 校验 Project mutation
     evidence_for_gate = {

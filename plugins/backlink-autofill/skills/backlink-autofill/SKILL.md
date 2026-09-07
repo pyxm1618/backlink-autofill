@@ -406,22 +406,51 @@ The validator strictly enforces direct observations only (Invariant 1 & 6):
 
 Prior research, discovery provenance (e.g. `BacklinkOS/已确认免费Follow`), and historical notes must NEVER populate `实测*` fields. Unknown facts remain blank; never guess. Project-specific status or result URL must never leak to other projects.
 
-### 11a. Post-submit Recheck Verification (Evidence-Driven State Transitions)
+## Manual Post-submit Recheck Mode
 
-When verifying existing rows in `已提交`, `审核中`, or `已排期` status:
-```bash
-python3 plugins/backlink-autofill/scripts/browser_cli.py recheck-evaluate \
-  --project-row-json '<project_row_json>' \
-  --recheck-evidence-json '<recheck_evidence_json>' \
-  [--current-date 'YYYY-MM-DD'] \
-  [--master-row-json '<master_row_json>']
-```
-Strict Recheck Rules:
-1. **Read-only**: Recheck NEVER triggers a new submission or form submit action (`forbidden_actions: ["submit"]`).
-2. **`已排期` stability**: If a scheduled launch date exists in the future (`scheduled_date > current_date`), status MUST remain `已排期`.
-3. **`已上线` criteria**: Requires BOTH verified public access (HTTP 200, non-404, no auth wall) AND verified project identity. A dashboard claiming "live" without a verified public listing URL is rejected and remains `审核中`.
-4. **`结果链接`**: Written only when verified live. Never write unverified, 404, or private dashboard/admin URLs.
-5. **`实测链接属性`**: In `外链总表`, written ONLY after inspecting the live DOM `<a>` tag `rel` attribute (`Follow`, `Nofollow`, `UGC`, `Sponsored`). If uninspected (`None`), it MUST remain empty string, never guess.
+Triggered when the user explicitly requests post-submit recheck, verification, or checking live status of existing submissions (e.g. "recheck submitted backlinks", "检查已提交外链状态", "核验排期上线").
+
+### Orchestration Workflow:
+1. **Read selected project**: Identify the target project profile;
+2. **Filter recheck queue**: Call `filter-recheck-queue` to select ONLY rows in `已提交`, `审核中`, or `已排期` status from `外链管理`:
+   ```bash
+   python3 plugins/backlink-autofill/scripts/browser_cli.py filter-recheck-queue \
+     --project-rows-json '<project_rows_json>' \
+     --selected-project-id '<project_id>' \
+     [--limit 100]
+   ```
+3. **Join Master**: Join selected project rows with `外链总表` by `外链ID`;
+4. **Read-only browser runtime**: Use existing browser runtime strictly for read-only inspection and navigation;
+5. **Prioritize public result URL**: If `结果链接` or public URL is already known/suspected, inspect it first for direct live evidence;
+6. **Dashboard inspection when needed**: Use existing authenticated session / domain recipe / platform entry to inspect user dashboard / submissions list;
+7. **Collect factual evidence**:
+   - `dashboard_status`: e.g. "published", "live", "pending", "scheduled", "under review";
+   - `scheduled_date`: e.g. "2026-10-15" if explicitly stated;
+   - `public_listing_url`: direct public page URL;
+   - `public_access_verified`: True only if accessible without auth (HTTP 200, non-404);
+   - `listing_identity_verified`: True only if target project identity matches page;
+   - `live_dom_rel`: live DOM `<a>` tag `rel` attribute (ONLY fill if DOM rel was genuinely inspected; leave None otherwise);
+8. **Evaluate status transition**:
+   ```bash
+   python3 plugins/backlink-autofill/scripts/browser_cli.py recheck-evaluate \
+     --project-row-json '<project_row_json>' \
+     --recheck-evidence-json '<recheck_evidence_json>' \
+     [--current-date 'YYYY-MM-DD'] \
+     [--master-row-json '<master_row_json>']
+   ```
+9. **Project mutation through Gate**: Validate project row mutation via `ProductionSheetGate`;
+10. **Master mutation through Gate**: Validate master row mutation via `ProductionSheetGate`; if `live_dom_rel` is None, `实测链接属性` is never modified or cleared;
+11. **Write exact Sheet cells**: Write validated updates to exact row/cells in `外链管理` (and `外链总表` if master facts updated);
+12. **Exact read-back**: Verify every mutation immediately by reading back the modified Sheet row;
+13. **Continue queue**: Cleanly proceed to the next item in the filtered recheck queue.
+
+### Strict Prohibitions in Recheck Mode:
+- **STRICTLY FORBIDDEN**: Calling `validate-execution-start`;
+- **STRICTLY FORBIDDEN**: Incrementing `尝试次数` (attempt count remains completely untouched);
+- **STRICTLY FORBIDDEN**: Clicking Final Submit or triggering new form submission actions (`forbidden_actions: ["submit"]`);
+- **STRICTLY FORBIDDEN**: New user registration or account creation;
+- **STRICTLY FORBIDDEN**: Creating new listings or submitting new forms;
+- **STRICTLY FORBIDDEN**: Introducing schedulers, cron jobs, background workers, or state machines.
 
 ### 12. Save/refresh domain recipe
 

@@ -130,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
     recheck_parser.add_argument("--now-iso")
     recheck_parser.add_argument("--master-row-json")
 
+    filter_recheck_parser = subparsers.add_parser("filter-recheck-queue")
+    filter_recheck_parser.add_argument("--project-rows-json", required=True)
+    filter_recheck_parser.add_argument("--selected-project-id", required=True)
+    filter_recheck_parser.add_argument("--limit", type=int, default=100)
+
     otp_parser = subparsers.add_parser("resolve-email-otp")
     _add_common(otp_parser)
     otp_parser.add_argument("--stdin", action="store_true", required=True, help="read OTP ephemerally from stdin")
@@ -382,6 +387,26 @@ def main() -> int:
                 now_iso=args.now_iso,
                 master_row=master_row,
             )
+
+        elif args.command == "filter-recheck-queue":
+            try:
+                project_rows = json.loads(args.project_rows_json)
+            except json.JSONDecodeError:
+                return _emit_error("INVALID_JSON", "project-rows-json must be valid JSON")
+            if not isinstance(project_rows, list):
+                return _emit_error("INVALID_PROJECT_ROWS", "project-rows-json must be a JSON array")
+
+            filtered_rows, error = ProductionSheetGate.filter_recheck_queue(
+                project_rows=project_rows,
+                selected_project_id=args.selected_project_id,
+                limit=args.limit,
+            )
+            result = {
+                "ok": error is None,
+                "error": error,
+                "count": len(filtered_rows),
+                "selected_rows": filtered_rows,
+            }
 
         elif args.command == "resolve-email-otp":
             if not args.target_id:
