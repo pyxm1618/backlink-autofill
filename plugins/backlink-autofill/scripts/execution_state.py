@@ -328,6 +328,100 @@ def detect_existing_project_submission(
     }
 
 
+def detect_anonymous_submission_preflight(
+    page_evidence: dict[str, Any],
+    project_row: dict[str, Any],
+    project_name: str = "",
+    canonical_url: str = "",
+    public_search_content: Any = None,
+) -> dict[str, Any]:
+    """Anonymous Submission Preflight.
+
+    Minimal duplicate-detection and preflight for anonymous/free forms.
+    Enforces:
+    1. If page requires login or is not an anonymous form, route back to account-based preflight.
+    2. If prior submission outcome was uncertain/ambiguous, halt for human review to prevent duplicate submits.
+    3. If project row indicates already submitted/scheduled/live, reject duplicate submit (FOUND).
+    4. If platform public search/listing content is readily available, inspect it for duplicates;
+       otherwise, safe to proceed without building universal public-search crawlers.
+    """
+    if not isinstance(page_evidence, dict):
+        page_evidence = {}
+    if not isinstance(project_row, dict):
+        project_row = {}
+
+    # 1. Check if login is required
+    if page_evidence.get("requires_login") is True or page_evidence.get("is_anonymous_form") is False:
+        return {
+            "verdict": "REQUIRES_LOGIN",
+            "reason": "Platform requires login or is not an anonymous submission form; defer to dashboard preflight",
+            "matched_identity": None,
+            "status_hint": None,
+            "scheduled_date": None,
+            "public_listing_url": None,
+        }
+
+    # 2. Check for uncertain prior submission outcome
+    notes_and_evidence = f"{project_row.get('原因/备注') or ''} {project_row.get('证据摘要') or ''}".lower()
+    uncertain_cues = (
+        "提交结果不确定",
+        "提交结果不明确",
+        "结果不明确",
+        "避免重复提交",
+        "uncertain submit",
+        "ambiguous post-submit",
+        "uncertain",
+    )
+    if any(cue in notes_and_evidence for cue in uncertain_cues):
+        return {
+            "verdict": "UNKNOWN",
+            "reason": "Prior submission outcome is uncertain; halting for human verification to avoid duplicate submission",
+            "matched_identity": None,
+            "status_hint": None,
+            "scheduled_date": None,
+            "public_listing_url": None,
+        }
+
+    # 3. Check if project row already shows prior submission/live state
+    current_status = str(project_row.get("状态") or "").strip()
+    if current_status in ("已提交", "审核中", "已排期", "已上线"):
+        return {
+            "verdict": "FOUND",
+            "reason": f"Project already submitted or live (current status: {current_status}); duplicate submission rejected",
+            "matched_identity": canonical_url or project_name,
+            "status_hint": current_status,
+            "scheduled_date": None,
+            "public_listing_url": None,
+        }
+
+    # 4. Optional: check readily available public search/listing content
+    if public_search_content is not None and public_search_content != "" and public_search_content != []:
+        search_res = detect_existing_project_submission(
+            content=public_search_content,
+            project_name=project_name,
+            canonical_url=canonical_url,
+        )
+        if search_res.get("verdict") == "FOUND":
+            return {
+                "verdict": "FOUND",
+                "reason": f"Existing submission detected via public search: {search_res.get('reason')}",
+                "matched_identity": search_res.get("matched_identity"),
+                "status_hint": search_res.get("status_hint"),
+                "scheduled_date": search_res.get("scheduled_date"),
+                "public_listing_url": search_res.get("public_listing_url"),
+            }
+
+    # 5. Form is verified anonymous, no duplicate detected -> SAFE
+    return {
+        "verdict": "SAFE",
+        "reason": "Anonymous form preflight passed: verified anonymous form and no prior submission evidence found",
+        "matched_identity": None,
+        "status_hint": None,
+        "scheduled_date": None,
+        "public_listing_url": None,
+    }
+
+
 def sanitize_result_url(
     url: str | None,
     evidence: dict[str, Any] | None = None,

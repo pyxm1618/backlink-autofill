@@ -256,6 +256,7 @@ Uploads must stay inside the selected project's private asset root. Derived imag
 
 **Existing project/submission preflight MUST run before any irreversible Final Submit.**
 
+#### A. Account-based platforms
 Once authenticated into the account, inspect the dashboard / my products / listings / submissions view before creating a new submission:
 
 1. **Structured Preflight Check (`detect_existing_project_submission`)**:
@@ -270,13 +271,22 @@ Once authenticated into the account, inspect the dashboard / my products / listi
    - **`UNKNOWN`**: Listings structure ambiguous, page unconfirmed, or unable to conclusively verify.
      - **Never guess**. Halt safely before irreversible Final Submit and mark `需人工` with reason `"已有提交状态不明确，暂停避免重复提交"`.
 
+#### B. Anonymous / Free submission forms
+For platforms that allow direct anonymous submissions without accounts:
+1. **Anonymous Preflight Check (`detect_anonymous_submission_preflight`)**:
+   - Verify page evidence confirms an anonymous form without requiring login;
+   - Check control plane project row status (if already `已提交`, `审核中`, `已排期`, `已上线`, return `FOUND` to prevent duplicate submit);
+   - Check prior outcome certainty (if notes/evidence show ambiguous/uncertain submit outcome, return `UNKNOWN` and halt for human review);
+   - Check readily available platform public search / listing content if easily accessible;
+   - If clear, return `SAFE` / `NOT_FOUND` allowing single fresh submission.
+
 ### 7. Final submit policy
 
 **Final submit may be automatic** when all are true:
 
 - free/non-payment path;
 - no security/human blocker;
-- **Existing Submission Preflight returned `NOT_FOUND`** (never submit if `FOUND` or `UNKNOWN`);
+- **Existing Submission Preflight passed** (account-based returned `NOT_FOUND`, or anonymous returned `SAFE` / `NOT_FOUND`; never submit if `FOUND` or `UNKNOWN`);
 - all required facts are approved;
 - no unusual legal authorization or external project-site modification;
 - final action/result can be read back.
