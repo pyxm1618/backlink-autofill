@@ -248,12 +248,8 @@ class TabIsolationAndResumeTests(unittest.TestCase):
             self.assertIsNotNone(retained)
             self.assertEqual(retained["status"], "NEEDS_HUMAN")
 
-    def test_resume_preserves_tab_when_still_blocked_and_closes_on_terminal(self):
-        """P2-4: 验证恢复挂起 Tab 时：
-        1. 仍在同一 URL 时跳过 reload 保护现场；
-        2. 恢复后若仍处于 human blocker，则继续保持 Tab (tab remains)；
-        3. 恢复后若已达稳定终态（无 blocker），则正常释放 Tab (tab closes)。
-        """
+    def test_resume_preserves_target_until_explicit_resolve(self):
+        """P2-4: resume 只恢复原 target；无 blocker 不等于业务终态，Runtime 退出不得自动关闭。"""
         # 1. 建立初始 Tab，在表单中填入未提交的中间状态并保留
         with BrowserRuntime(
             profile_dir=Path(self.user_data_dir),
@@ -266,8 +262,8 @@ class TabIsolationAndResumeTests(unittest.TestCase):
             rt1.page.locator("#name").fill("Unsaved Form State")
             self.assertEqual(rt1.page.locator("#name").input_value(), "Unsaved Form State")
 
-        # 2. 恢复该 Tab，访问同一 URL：未 reload，表单状态完好保留
-        # 模拟达到终态（无 human blocker），退出后该 Tab 应正常关闭释放
+        # 2. 恢复该 Tab，访问同一 URL：未 reload，表单状态完好保留。
+        # 即使当前页面没有 human_blocker，Runtime 也没有权限推断“业务终态”。
         with BrowserRuntime(
             profile_dir=Path(self.user_data_dir),
             cdp_url=self.cdp_url,
@@ -281,19 +277,22 @@ class TabIsolationAndResumeTests(unittest.TestCase):
                 "Unsaved Form State",
                 "Form field was wiped out by an unnecessary page reload on resume!",
             )
-            # 此时任务完成，无 human_blocker
 
-        # 验证 rt2 终态退出后，该 Tab 已被正常关闭（不再残留在 targets 中）
+        # Resume target 默认继续保留；只有显式 human-pending-resolve 在确认终态后负责关闭。
         with urlopen(f"{self.cdp_url}/json/list") as resp:
             targets = json.load(resp)
             target_ids = [t.get("id") for t in targets]
-            self.assertNotIn(
+            self.assertIn(
                 target_id_1,
                 target_ids,
-                "Resumed tab reached terminal status but was NOT closed on BrowserRuntime.__exit__!",
+                "Resumed target was closed merely because the current page had no human blocker",
             )
 
-        # 3. 验证如果恢复后仍然处于 human blocker，Tab 依然必须保持保留
+        # 本测试没有创建 durable pending record，因此直接手动清理这个测试 target。
+        with urlopen(f"{self.cdp_url}/json/close/{target_id_1}"):
+            pass
+
+        # 3. 验证如果恢复后仍然处于 human blocker，Tab 同样必须保持保留
         with BrowserRuntime(
             profile_dir=Path(self.user_data_dir),
             cdp_url=self.cdp_url,
@@ -311,7 +310,6 @@ class TabIsolationAndResumeTests(unittest.TestCase):
             res = rt4.navigate(f"{self.base_url}/challenge.html")
             self.assertIsNotNone(res.get("human_blocker"))
 
-        # 退出后，因为仍然 blocked，必须保留该 Tab
         with urlopen(f"{self.cdp_url}/json/list") as resp:
             targets = json.load(resp)
             target_ids = [t.get("id") for t in targets]
@@ -321,7 +319,6 @@ class TabIsolationAndResumeTests(unittest.TestCase):
                 "Still-blocked resumed tab was improperly closed!",
             )
 
-        # 手动清理 blocked tab
         with urlopen(f"{self.cdp_url}/json/close/{target_id_blocked}"):
             pass
 
