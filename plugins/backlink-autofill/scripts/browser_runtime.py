@@ -22,6 +22,7 @@ from playwright.sync_api import BrowserContext, Locator, Page, Playwright, sync_
 from credential_store import CredentialStoreError, get_site_password
 
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
+IDLE_WORKER_URLS = {"about:blank", "chrome://newtab/", "chrome://new-tab-page/"}
 
 
 def _probe_cdp(url: str, timeout: float = 0.5) -> dict | None:
@@ -432,6 +433,52 @@ class BrowserRuntime:
         except Exception:
             return None
 
+    @staticmethod
+    def _is_idle_worker_page(page: Page) -> bool:
+        try:
+            return not page.is_closed() and page.url in IDLE_WORKER_URLS
+        except Exception:
+            return False
+
+    def _acquire_worker_page(self) -> Page:
+        assert self._context is not None
+        idle_pages = [page for page in self._context.pages if self._is_idle_worker_page(page)]
+        if idle_pages:
+            worker = idle_pages[0]
+            # Multiple idle blank pages are AI-owned leftovers, not HUMAN_PENDING tabs.
+            # Compact them so ordinary automation never accumulates more than one worker.
+            for extra in idle_pages[1:]:
+                try:
+                    extra.close()
+                except Exception:
+                    pass
+            return worker
+        return self._context.new_page()
+
+    def _release_worker_page(self) -> None:
+        if self.page is None:
+            return
+        try:
+            if self.page.is_closed():
+                return
+        except Exception:
+            return
+
+        try:
+            if self.page.url != "about:blank":
+                self.page.goto(
+                    "about:blank",
+                    wait_until="commit",
+                    timeout=min(self.timeout_ms, 5_000),
+                )
+        except Exception:
+            # A worker that cannot be reset safely should not linger as an orphan.
+            try:
+                if not self.page.is_closed():
+                    self.page.close()
+            except Exception:
+                pass
+
     def __enter__(self) -> "BrowserRuntime":
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = sync_playwright().start()
@@ -479,7 +526,7 @@ class BrowserRuntime:
                 self.page = matched_page
                 self.target_id = self.resume_target_id
             else:
-                self.page = self._context.new_page()
+                self.page = self._acquire_worker_page()
                 self.target_id = self._get_page_target_id(self.page)
 
             return self
@@ -515,18 +562,25 @@ class BrowserRuntime:
     def __exit__(self, exc_type, exc, tb) -> None:
         if self.is_external_cdp:
             if self.page is not None:
-                # 恢复的 Tab 仅在依然处于 human blocker 状态时保留；若已达终态或无 blocker，则正常关闭
-                should_keep = (
+                # HUMAN_PENDING / explicit keep tabs are protected exactly as-is.
+                preserve_exact_tab = (
                     self.keep_tab
                     or (self.keep_on_human_blocker and self._stopped_for_human)
                     or (bool(self.resume_target_id) and self._stopped_for_human)
                 )
-                if not should_keep:
-                    try:
-                        if not self.page.is_closed():
-                            self.page.close()
-                    except Exception:
-                        pass
+                if not preserve_exact_tab:
+                    if self.resume_target_id:
+                        # A resumed pending tab that reached a stable terminal state is no
+                        # longer part of the worker pool; close it as before.
+                        try:
+                            if not self.page.is_closed():
+                                self.page.close()
+                        except Exception:
+                            pass
+                    else:
+                        # Ordinary AI work releases the page back to one reusable idle
+                        # worker instead of creating/closing a renderer for every task.
+                        self._release_worker_page()
             if self._playwright is not None:
                 try:
                     self._playwright.stop()
