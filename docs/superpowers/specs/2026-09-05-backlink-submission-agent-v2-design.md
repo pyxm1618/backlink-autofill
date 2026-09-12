@@ -44,7 +44,7 @@ Out of scope:
 6. **Human only on exception.** Security challenges, payment, unusual authorization, missing facts, and unmanaged primary credentials require takeover.
 7. **Evidence before status.** Model narration alone never proves a browser action or submission outcome.
 8. **Run-based, not time-based.** Default maximum is 100 per invocation; no daily quota or scheduler.
-9. **Bound AI resources without destroying human state.** The browser lifecycle invariant is `1 reusable AI worker tab + N protected HUMAN_PENDING tabs`. AI-owned idle workers are bounded; valid human-pending tabs are never discarded merely to reduce memory.
+9. **Bound AI resources without destroying human state.** The browser lifecycle invariant is `1 reusable AI worker tab + N protected HUMAN_PENDING tabs`. AI-owned idle workers are bounded; valid human-pending tabs are never discarded merely to reduce memory. Durable pending identity (`target_id`) outranks current URL state.
 
 ## Google Sheets topology
 
@@ -144,9 +144,11 @@ The website executor is a real local Playwright component, not narrative prompti
 - persistent external Chrome/CDP session is the normal execution mode;
 - ordinary AI work reuses one idle worker tab instead of creating and destroying a renderer for every task;
 - after an ordinary terminal task, the worker resets to `about:blank` and remains available for the next task;
+- AI worker ownership is explicitly marked; blank/new-tab URL alone is not sufficient evidence that a page belongs to the worker pool;
 - if the active worker hits a genuine human blocker, that exact tab is promoted to protected `HUMAN_PENDING` state and is no longer eligible for AI worker reuse;
+- unresolved durable `human_pending.target_id` values are excluded before any worker reuse or compaction, even if the corresponding page later becomes `about:blank`;
 - a separate idle AI worker is kept or created immediately so subsequent rows continue without touching the human tab;
-- surplus idle blank AI worker tabs may be compacted, but nonblank/protected human-pending tabs are never treated as worker leaks;
+- only surplus blank pages positively identified as AI workers may be compacted; unknown/user-owned blank pages and protected human-pending pages are never treated as worker leaks;
 - compact interactive DOM/form extraction;
 - actions: non-sensitive fill, `credential_fill`, select, check, upload, ordinary click, final submit;
 - upload restricted to the selected project's private asset root;
@@ -188,8 +190,9 @@ Persistent-CDP handoff lifecycle:
 5. immediately keep/create a separate idle AI worker tab and continue the rest of the batch;
 6. human performs the required step in the preserved visible Chrome tab;
 7. on explicit resume, reattach to the same tab by persisted `target_id` and inspect whether the blocker is resolved;
-8. continue the same attempt when safe; if the blocker remains, keep the same tab protected;
-9. close the formerly protected tab only after a stable terminal/non-blocked state has been verified and recorded.
+8. blocker disappearance is only permission to continue the same attempt; it is **not** business-terminal evidence and does not release the protected target;
+9. continue the same attempt on that target until a stable terminal business status is independently verified and recorded;
+10. only then call `human-pending-resolve`, which removes the durable pending record and performs best-effort cleanup of the formerly protected tab.
 
 In standalone fallback mode where persistent external CDP is unavailable, the headed handoff path may still present the same profile visibly. That fallback must preserve the same security and no-secret-replay rules.
 
@@ -203,7 +206,7 @@ A `需人工` row can resume without becoming a new attempt when:
 - evidence proves the previous final Submit did not happen;
 - the continuation belongs to the same interrupted attempt.
 
-For persistent-CDP pending tasks, resume must target the original saved `target_id`. If that target is lost, the system must fail conservatively (`TARGET_TAB_LOST`), retain `需人工`, and never auto-register or auto-submit from scratch.
+For persistent-CDP pending tasks, resume must target the original saved `target_id`. The BrowserRuntime itself never closes a resumed target merely because the current inspection has no blocker. If that target is lost, the system must fail conservatively (`TARGET_TAB_LOST`), retain `需人工`, and never auto-register or auto-submit from scratch.
 
 If final-submit state is uncertain, never use this shortcut.
 
