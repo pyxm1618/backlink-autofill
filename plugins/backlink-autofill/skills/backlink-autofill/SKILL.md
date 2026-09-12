@@ -196,7 +196,7 @@ Browser lifecycle is a hard invariant:
 - After an ordinary terminal task, reset the worker to `about:blank` and leave it available for the next task.
 - If the active worker becomes `HUMAN_PENDING`, that exact page is immediately protected: do not refresh it, reset it, close it, or reuse it for another AI task.
 - Keep or create a separate idle AI worker so the batch can continue while the human page remains visible.
-- Only surplus idle blank AI worker pages are eligible for compaction; valid nonblank/pending pages are not worker leaks.
+- Worker reuse/compaction requires positive AI-worker ownership, not merely a blank URL. Before reusing or closing any idle page, exclude every unresolved durable `human_pending.target_id`; a pending target remains protected even if its current URL is `about:blank`.
 
 Do not use screenshots/full-page dumps when compact DOM/form state is sufficient.
 
@@ -327,8 +327,8 @@ When the user completes the human step in the visible Chrome window and asks to 
 
 1. Attach to the persistent CDP Chrome session (`127.0.0.1:9222`);
 2. Locate the durable `human_pending` record under `~/.backlink-autofill/runtime/human-pending/<project_id>/<backlink_id>.json` and locate the original Tab by persisted `target_id`;
-3. Inspect current page state to confirm the human blocker has been resolved (e.g. verification code accepted, logged in, reached next form step);
-4. Resume execution from the checkpoint;
+3. Inspect current page state to confirm the human blocker has been resolved (e.g. verification code accepted, logged in, reached next form step). **Blocker disappearance alone is not a terminal business state and MUST NOT release or close the target tab.**;
+4. Resume execution from the checkpoint on that same protected target. The resumed tab remains protected whether the blocker persists or has cleared, until explicit terminal resolution;
 5. Once a stable terminal status (`已提交`, `审核中`, `已上线`, `已排期`, `失败`, `不适用`) is verified and written to Sheet, call `human-pending-resolve` with `--project-id`, `--backlink-id`, and `--terminal-status` to cleanly resolve the pending record and trigger best-effort cleanup of the target tab. If tab closure encounters an issue (e.g. tab already closed or CDP disconnect), it MUST NOT revert or degrade the verified terminal business status;
 6. **Strict prohibition on `clear`**: Submission workflow MUST NEVER use `human-pending-clear` to restart tasks from scratch. `clear` is strictly an administrative command requiring `--admin-override`;
 7. **Conservative recovery rule**: if the original `target_id` cannot be found or the tab was closed:
@@ -471,7 +471,7 @@ After a verified stable flow, save selectors/navigation/success indicators. Neve
 
 ### 13. Finish or continue
 
-Delete completed-row checkpoints once the row reaches a non-ambiguous terminal state. Ordinary terminal tasks return their AI worker tab to `about:blank` for reuse instead of closing/recreating it. Genuine `HUMAN_PENDING` tasks retain their exact tabs untouched in the persistent browser; keep their checkpoint and durable `human_pending` record until resolved. Once a pending task reaches a verified terminal/non-blocked state, resolve the pending record and perform best-effort cleanup of that formerly protected tab.
+Delete completed-row checkpoints once the row reaches a non-ambiguous terminal state. Ordinary terminal tasks return their AI worker tab to `about:blank` for reuse instead of closing/recreating it. Genuine `HUMAN_PENDING` tasks retain their exact tabs untouched in the persistent browser; keep their checkpoint and durable `human_pending` record until explicitly resolved. A cleared CAPTCHA/verification step or another non-blocked intermediate page does **not** authorize tab cleanup. Only after a verified terminal business status is written may `human-pending-resolve` remove the pending record and perform best-effort cleanup of that formerly protected tab.
 
 Continue processing rows until the batch is exhausted or the invocation limit is reached. Single-task human blockers (`需人工`) must never terminate the batch; record them and immediately proceed to subsequent rows using the separate reusable AI worker.
 
