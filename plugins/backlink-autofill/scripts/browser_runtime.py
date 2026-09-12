@@ -23,6 +23,7 @@ from credential_store import CredentialStoreError, get_site_password
 
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 IDLE_WORKER_URLS = {"about:blank", "chrome://newtab/", "chrome://new-tab-page/"}
+AI_WORKER_WINDOW_NAME = "backlink-autofill:ai-worker:v1"
 
 
 def _probe_cdp(url: str, timeout: float = 0.5) -> dict | None:
@@ -389,6 +390,12 @@ class BrowserRuntime:
         self.keep_tab = keep_tab
         self.resume_target_id = resume_target_id
         self.target_domain = target_domain
+        runtime_root_env = os.environ.get("BACKLINK_RUNTIME_ROOT")
+        self.runtime_root = (
+            Path(runtime_root_env).expanduser().resolve()
+            if runtime_root_env
+            else self.profile_dir.parent / "runtime"
+        )
         self.is_external_cdp: bool = False
         self.target_id: str | None = None
         self._stopped_for_human: bool = False
@@ -433,31 +440,91 @@ class BrowserRuntime:
         except Exception:
             return None
 
+    def _active_human_pending_target_ids(self) -> set[str]:
+        """Return unresolved durable HUMAN_PENDING target IDs across all projects."""
+        pending_root = self.runtime_root / "human-pending"
+        if not pending_root.exists() or not pending_root.is_dir():
+            return set()
+
+        target_ids: set[str] = set()
+        try:
+            pending_files = list(pending_root.glob("*/*.json"))
+        except OSError:
+            return set()
+
+        for pending_file in pending_files:
+            try:
+                payload = json.loads(pending_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict) or payload.get("status") != "NEEDS_HUMAN":
+                continue
+            target_id = payload.get("target_id")
+            if isinstance(target_id, str) and target_id.strip():
+                target_ids.add(target_id.strip())
+        return target_ids
+
     @staticmethod
-    def _is_idle_worker_page(page: Page) -> bool:
+    def _page_has_idle_url(page: Page) -> bool:
         try:
             return not page.is_closed() and page.url in IDLE_WORKER_URLS
         except Exception:
             return False
 
+    @staticmethod
+    def _is_ai_worker_page(page: Page) -> bool:
+        try:
+            return not page.is_closed() and page.evaluate("window.name") == AI_WORKER_WINDOW_NAME
+        except Exception:
+            return False
+
+    @staticmethod
+    def _mark_ai_worker_page(page: Page) -> None:
+        try:
+            page.evaluate("name => { window.name = name; }", AI_WORKER_WINDOW_NAME)
+        except Exception:
+            pass
+
+    def _is_idle_worker_page(self, page: Page, protected_target_ids: set[str]) -> bool:
+        if not self._page_has_idle_url(page) or not self._is_ai_worker_page(page):
+            return False
+        target_id = self._get_page_target_id(page)
+        return not target_id or target_id not in protected_target_ids
+
     def _acquire_worker_page(self, *, exclude_page: Page | None = None) -> Page:
         assert self._context is not None
+        protected_target_ids = self._active_human_pending_target_ids()
+
         idle_pages = [
             page
             for page in self._context.pages
-            if page is not exclude_page and self._is_idle_worker_page(page)
+            if page is not exclude_page and self._is_idle_worker_page(page, protected_target_ids)
         ]
         if idle_pages:
             worker = idle_pages[0]
-            # Multiple idle blank pages are AI-owned leftovers, not HUMAN_PENDING tabs.
-            # Compact them so ordinary automation never accumulates more than one worker.
+            # Compact only pages positively identified as AI-owned workers. A blank URL
+            # alone is never ownership evidence, and unresolved pending target IDs win.
             for extra in idle_pages[1:]:
                 try:
                     extra.close()
                 except Exception:
                     pass
             return worker
-        return self._context.new_page()
+
+        # Bootstrap exactly one unprotected blank page as the AI worker. Other unmarked
+        # blank pages are user-owned/unknown and are never compacted merely by URL.
+        for page in self._context.pages:
+            if page is exclude_page or not self._page_has_idle_url(page):
+                continue
+            target_id = self._get_page_target_id(page)
+            if target_id and target_id in protected_target_ids:
+                continue
+            self._mark_ai_worker_page(page)
+            return page
+
+        worker = self._context.new_page()
+        self._mark_ai_worker_page(worker)
+        return worker
 
     def _release_worker_page(self) -> None:
         if self.page is None:
@@ -475,6 +542,7 @@ class BrowserRuntime:
                     wait_until="commit",
                     timeout=min(self.timeout_ms, 5_000),
                 )
+            self._mark_ai_worker_page(self.page)
         except Exception:
             # A worker that cannot be reset safely should not linger as an orphan.
             try:
@@ -531,6 +599,7 @@ class BrowserRuntime:
                 self.target_id = self.resume_target_id
             else:
                 self.page = self._acquire_worker_page()
+                self._mark_ai_worker_page(self.page)
                 self.target_id = self._get_page_target_id(self.page)
 
             return self
@@ -566,11 +635,13 @@ class BrowserRuntime:
     def __exit__(self, exc_type, exc, tb) -> None:
         if self.is_external_cdp:
             if self.page is not None:
-                # HUMAN_PENDING / explicit keep tabs are protected exactly as-is.
+                # Resumed targets are protected until the durable pending record is
+                # explicitly resolved after business-terminal evidence. Blocker absence
+                # alone is not terminal completion.
                 preserve_exact_tab = (
                     self.keep_tab
+                    or bool(self.resume_target_id)
                     or (self.keep_on_human_blocker and self._stopped_for_human)
-                    or (bool(self.resume_target_id) and self._stopped_for_human)
                 )
                 if preserve_exact_tab:
                     # The protected page is no longer available to AI automation. Keep it
@@ -581,14 +652,6 @@ class BrowserRuntime:
                     except Exception:
                         # Never sacrifice or mutate a human-pending tab merely because a
                         # replacement worker could not be created; the next run can retry.
-                        pass
-                elif self.resume_target_id:
-                    # A resumed pending tab that reached a stable terminal state is no
-                    # longer part of the worker pool; close it as before.
-                    try:
-                        if not self.page.is_closed():
-                            self.page.close()
-                    except Exception:
                         pass
                 else:
                     # Ordinary AI work releases the page back to one reusable idle
