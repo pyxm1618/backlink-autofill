@@ -16,9 +16,9 @@ explicit project
 ```
 
 **Headless is the default.** Automation runs via a persistent Chrome CDP session (`http://127.0.0.1:9222`, or `BACKLINK_BROWSER_CDP_URL`) reusing a single persistent browser context. Ordinary AI work also reuses one idle worker tab to avoid per-task renderer churn:
-- **Bounded AI worker reuse**: Ordinary tasks use one reusable worker tab. After a terminal state (`已提交`, `审核中`, `已排期`, `已上线`, `失败`, `不适用`) and confirmed Sheet exact-row read-back, the worker is reset to `about:blank` and retained for the next task instead of being destroyed and recreated;
-- **Protected non-blocking HUMAN_PENDING**: If a genuine blocker (CAPTCHA, 2FA, SMS, phone, payment) or unresolvable verification occurs, the task enters `需人工` and preserves that exact tab in the persistent Chrome window. The AI does not refresh, reset, close, or reuse that protected tab. A separate idle worker is kept or created so **the batch does NOT stop** and subsequent tasks can continue immediately;
-- **Best-effort pending cleanup**: When a pending task is resumed and reaches a terminal state, the system attempts an external CDP close on that formerly protected tab. Cleanup errors do not pollute or revert the confirmed terminal state.
+- **Bounded AI worker reuse**: Ordinary tasks use one reusable worker tab. After a terminal state (`已提交`, `审核中`, `已排期`, `已上线`, `失败`, `不适用`) and confirmed Sheet exact-row read-back, the worker is reset to `about:blank` and retained for the next task instead of being destroyed and recreated. Worker reuse/compaction requires positive AI-worker ownership; a blank URL by itself is never enough to classify a page as disposable;
+- **Protected non-blocking HUMAN_PENDING**: If a genuine blocker (CAPTCHA, 2FA, SMS, phone, payment) or unresolvable verification occurs, the task enters `需人工` and preserves that exact tab in the persistent Chrome window. The durable pending `target_id` has priority over URL state, so an unresolved pending tab remains protected even if a human navigates it to `about:blank`. The AI does not refresh, reset, close, or reuse that protected tab. A separate idle worker is kept or created so **the batch does NOT stop** and subsequent tasks can continue immediately;
+- **Resolve-only pending cleanup**: Removing the visible blocker is not the same as finishing the business task. A resumed pending tab remains protected even after CAPTCHA/verification disappears or it reaches the next ordinary form. Only after a verified terminal business state has been written may `human-pending-resolve` remove the durable pending record and perform best-effort CDP cleanup of that exact tab. Cleanup errors do not pollute or revert the confirmed terminal state.
 
 **Final submit may be automatic.** The agent does not stop merely because a button says Submit, Publish, Launch, Post, Create Listing, or Send for Review. Genuine human-only blockers remain CAPTCHA/Cloudflare, 2FA/passkey/SMS verification, payment, unusual authorization, missing factual information, or an unauthenticated state that local site credentials cannot resolve.
 
@@ -199,7 +199,7 @@ $backlink-autofill
 这次先处理 5 条。
 ```
 
-The agent reads `外链管理`, selects only the current project's eligible rows, and processes them in Sheet order. Ordinary successful rows run without opening a visible browser or asking for per-row confirmation. After a normal terminal outcome and exact-row Sheet read-back, the AI worker is reset to `about:blank` and reused for the next task. A `需人工` tab is instead preserved untouched and remains visible until it is resolved; the AI continues on a separate worker tab.
+The agent reads `外链管理`, selects only the current project's eligible rows, and processes them in Sheet order. Ordinary successful rows run without opening a visible browser or asking for per-row confirmation. After a normal terminal outcome and exact-row Sheet read-back, the AI worker is reset to `about:blank` and reused for the next task. A `需人工` tab is instead preserved untouched and remains visible until its durable pending record is explicitly resolved after terminal business evidence; the AI continues on a separate worker tab.
 
 For a new backlink-platform account, the action plan may include:
 
@@ -215,7 +215,7 @@ Before any irreversible Final Submit, the agent performs **Existing Submission P
 
 If an email verification code is required, the agent first attempts automated, host-agnostic EMAIL_OTP resolution using the host's mail capability (Codex Gmail connected app or Antigravity Gmail MCP) via the shared Core Resolver and ephemeral stdin injection. If automated mail retrieval is unavailable or an unresolvable blocker occurs (e.g. CAPTCHA, 2FA, SMS), the current row becomes `需人工`, its browser tab is preserved in the persistent Chrome window, and a durable `human_pending` record is stored. The batch does NOT pause—subsequent tasks continue execution immediately.
 
-When human-pending tasks are completed and resumed, reaching a confirmed terminal state triggers best-effort cleanup of the preserved tab without affecting the recorded status.
+When a human-pending task is resumed, blocker disappearance alone never closes the tab. After a verified terminal status is written to Sheet, `human-pending-resolve` explicitly resolves the durable record and performs best-effort cleanup of the preserved tab without affecting the recorded status.
 
 ## Evidence and truthfulness
 
