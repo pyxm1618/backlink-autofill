@@ -237,41 +237,43 @@ class ResourceLifecycleScaleTests(unittest.TestCase):
         shutil.rmtree(cls.user_data_dir, ignore_errors=True)
 
     def test_lifecycle_scale_completed_tasks_do_not_linearly_accumulate_pages(self):
-        """资源规模验收：模拟连续处理 10 个普通 terminal tasks，页面数在退出后回落至基线；1 个挂起任务保留。
-        确认：completed_tasks 增长 != remaining task pages 线性增长。
+        """资源规模验收：10 个普通任务只保留 1 个可复用 AI Worker；1 个 blocker 另行保留。
+        未标识/用户拥有的页面不属于 Worker 泄漏，也不应被此测试要求关闭。
         """
-        # 1. 记录初始页面数量（基线，仅统计 type == "page"）
-        with urlopen(f"{self.cdp_url}/json/list") as resp:
-            baseline_pages = len([t for t in json.load(resp) if t.get("type") == "page"])
-
-        # 2. 连续运行 10 个普通任务（模拟访问并在终端状态正常关闭）
-        for i in range(10):
+        # 1. 连续运行 10 个普通任务；它们应复用同一个 AI Worker。
+        first_worker_tid = None
+        for _ in range(10):
             with BrowserRuntime(
                 profile_dir=Path(self.user_data_dir),
                 cdp_url=self.cdp_url,
                 allow_local_fallback=False,
             ) as rt:
+                if first_worker_tid is None:
+                    first_worker_tid = rt.target_id
+                else:
+                    self.assertEqual(first_worker_tid, rt.target_id)
                 rt.navigate("https://example.com")
-                # 普通任务结束，__exit__ 会执行 page.close()
 
-        # 3. 检查处理完 10 个任务后的外部 Chrome 页面数：必须回落至基线，未发生线性累加！
-        deadline = time.time() + 5.0
-        after_10_pages = -1
-        while time.time() < deadline:
-            with urlopen(f"{self.cdp_url}/json/list") as resp:
-                targets = [t for t in json.load(resp) if t.get("type") == "page"]
-                after_10_pages = len(targets)
-            if after_10_pages == baseline_pages:
-                break
-            time.sleep(0.2)
+        # 2. 重新 attach 后只统计 AI-owned Worker；未知/用户页可以合法共存。
+        with BrowserRuntime(
+            profile_dir=Path(self.user_data_dir),
+            cdp_url=self.cdp_url,
+            allow_local_fallback=False,
+        ) as rt_check:
+            self.assertEqual(first_worker_tid, rt_check.target_id)
+            assert rt_check.context is not None
+            ai_worker_tids = [
+                rt_check._get_page_target_id(page)
+                for page in rt_check.context.pages
+                if rt_check._is_ai_worker_page(page)
+            ]
+            self.assertEqual(
+                [first_worker_tid],
+                ai_worker_tids,
+                f"Expected exactly one reusable AI-owned Worker, found {ai_worker_tids}",
+            )
 
-        self.assertEqual(
-            after_10_pages,
-            baseline_pages,
-            f"Expected page count to return to baseline ({baseline_pages}), but found {after_10_pages}!",
-        )
-
-        # 4. 模拟 1 个带有 human blocker 的任务（开启 keep_on_human_blocker）
+        # 3. 模拟 1 个带 human blocker 的任务；该页必须保留，并另有 1 个 Worker 可继续执行。
         with BrowserRuntime(
             profile_dir=Path(self.user_data_dir),
             cdp_url=self.cdp_url,
@@ -281,26 +283,29 @@ class ResourceLifecycleScaleTests(unittest.TestCase):
             rt_block._stopped_for_human = True
             blocked_tid = rt_block.target_id
 
-        # 5. 再次检查：此时应仅增加 1 个保留 Tab（基线 + 1），而不是 10 + 1 个！
-        deadline = time.time() + 5.0
-        current_pages = []
-        while time.time() < deadline:
-            with urlopen(f"{self.cdp_url}/json/list") as resp:
-                current_pages = [t for t in json.load(resp) if t.get("type") == "page"]
-            if len(current_pages) == baseline_pages + 1:
-                break
-            time.sleep(0.2)
-
-        self.assertEqual(
-            len(current_pages),
-            baseline_pages + 1,
-            f"Expected exactly 1 blocked tab to remain (total {baseline_pages + 1}), but found {len(current_pages)}!",
-        )
-        self.assertIn(
-            blocked_tid,
-            [t.get("id") for t in current_pages],
-            f"Blocked target {blocked_tid} must be preserved in active CDP session!",
-        )
+        with BrowserRuntime(
+            profile_dir=Path(self.user_data_dir),
+            cdp_url=self.cdp_url,
+            resume_target_id=blocked_tid,
+            allow_local_fallback=False,
+        ) as rt_verify:
+            assert rt_verify.context is not None
+            target_ids = [rt_verify._get_page_target_id(page) for page in rt_verify.context.pages]
+            self.assertIn(
+                blocked_tid,
+                target_ids,
+                f"Blocked target {blocked_tid} must be preserved in active CDP session!",
+            )
+            worker_tids = [
+                rt_verify._get_page_target_id(page)
+                for page in rt_verify.context.pages
+                if page is not rt_verify.page and rt_verify._is_ai_worker_page(page)
+            ]
+            self.assertEqual(
+                1,
+                len(worker_tids),
+                f"Expected one separate AI Worker beside blocked target, found {worker_tids}",
+            )
 
         # 清理该 blocked tab
         if blocked_tid:

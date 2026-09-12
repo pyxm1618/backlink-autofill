@@ -186,6 +186,18 @@ If missing/stale, inspect the real page with the browser runtime's compact inter
 ~/.backlink-autofill/browser-profile/
 ```
 
+Browser lifecycle is a hard invariant:
+
+```text
+1 reusable AI worker tab + N protected HUMAN_PENDING tabs
+```
+
+- Ordinary AI work must reuse a single idle worker tab whenever possible instead of creating/closing a renderer for every task.
+- After an ordinary terminal task, reset the worker to `about:blank` and leave it available for the next task.
+- If the active worker becomes `HUMAN_PENDING`, that exact page is immediately protected: do not refresh it, reset it, close it, or reuse it for another AI task.
+- Keep or create a separate idle AI worker so the batch can continue while the human page remains visible.
+- Worker reuse/compaction requires positive AI-worker ownership, not merely a blank URL. Before reusing or closing any idle page, exclude every unresolved durable `human_pending.target_id`; a pending target remains protected even if its current URL is `about:blank`.
+
 Do not use screenshots/full-page dumps when compact DOM/form state is sufficient.
 
 ### 4. Discover platform facts by execution
@@ -302,11 +314,12 @@ When encountering an unresolved email verification blocker, CAPTCHA, 2FA, passke
 1. Save credential-free row checkpoint;
 2. Save durable `human_pending` record under `~/.backlink-autofill/runtime/human-pending/` including project ID, backlink ID, current URL, blocker type, and CDP `target_id`;
 3. Write exact project Sheet row `需人工` + concrete `原因/备注` + concise `证据摘要` and verify by re-read;
-4. In persistent CDP Chrome mode: keep the active browser Tab open in the external Chrome (do not close it); in headless standalone fallback mode: launch `handoff-start` on the profile to present the visible window;
-5. Add the task to the current batch's human-pending collection;
-6. **Immediately proceed to the next `待提交` row in the queue.**
+4. In persistent CDP Chrome mode, preserve the active browser Tab exactly as-is. **Do not refresh, reset, close, or reuse it as an AI worker.** In headless standalone fallback mode, launch `handoff-start` on the profile to present the visible window;
+5. Keep or create a separate idle AI worker Tab so automation can continue without touching the protected human tab;
+6. Add the task to the current batch's human-pending collection;
+7. **Immediately proceed to the next `待提交` row in the queue.**
 
-Never pause or abort the batch because one task requires human intervention. Multiple `HUMAN_PENDING` tabs may coexist simultaneously without conflict.
+Never pause or abort the batch because one task requires human intervention. Multiple `HUMAN_PENDING` tabs may coexist simultaneously without conflict. Their count is not capped or reduced by closing valid pending tabs merely to save memory; memory bounding applies to AI-owned worker pages and orphaned idle pages.
 
 ### 8a. Human pending resume protocol
 
@@ -314,8 +327,8 @@ When the user completes the human step in the visible Chrome window and asks to 
 
 1. Attach to the persistent CDP Chrome session (`127.0.0.1:9222`);
 2. Locate the durable `human_pending` record under `~/.backlink-autofill/runtime/human-pending/<project_id>/<backlink_id>.json` and locate the original Tab by persisted `target_id`;
-3. Inspect current page state to confirm the human blocker has been resolved (e.g. verification code accepted, logged in, reached next form step);
-4. Resume execution from the checkpoint;
+3. Inspect current page state to confirm the human blocker has been resolved (e.g. verification code accepted, logged in, reached next form step). **Blocker disappearance alone is not a terminal business state and MUST NOT release or close the target tab.**;
+4. Resume execution from the checkpoint on that same protected target. The resumed tab remains protected whether the blocker persists or has cleared, until explicit terminal resolution;
 5. Once a stable terminal status (`已提交`, `审核中`, `已上线`, `已排期`, `失败`, `不适用`) is verified and written to Sheet, call `human-pending-resolve` with `--project-id`, `--backlink-id`, and `--terminal-status` to cleanly resolve the pending record and trigger best-effort cleanup of the target tab. If tab closure encounters an issue (e.g. tab already closed or CDP disconnect), it MUST NOT revert or degrade the verified terminal business status;
 6. **Strict prohibition on `clear`**: Submission workflow MUST NEVER use `human-pending-clear` to restart tasks from scratch. `clear` is strictly an administrative command requiring `--admin-override`;
 7. **Conservative recovery rule**: if the original `target_id` cannot be found or the tab was closed:
@@ -458,9 +471,9 @@ After a verified stable flow, save selectors/navigation/success indicators. Neve
 
 ### 13. Finish or continue
 
-Delete completed-row checkpoints once the row reaches a non-ambiguous terminal state. Terminal task tabs are automatically closed upon completion and Sheet read-back; only genuine `HUMAN_PENDING` tasks retain their tabs in the persistent browser. Keep checkpoint and durable `human_pending` record for `需人工`/ambiguous interrupted work.
+Delete completed-row checkpoints once the row reaches a non-ambiguous terminal state. Ordinary terminal tasks return their AI worker tab to `about:blank` for reuse instead of closing/recreating it. Genuine `HUMAN_PENDING` tasks retain their exact tabs untouched in the persistent browser; keep their checkpoint and durable `human_pending` record until explicitly resolved. A cleared CAPTCHA/verification step or another non-blocked intermediate page does **not** authorize tab cleanup. Only after a verified terminal business status is written may `human-pending-resolve` remove the pending record and perform best-effort cleanup of that formerly protected tab.
 
-Continue processing rows until the batch is exhausted or the invocation limit is reached. Single-task human blockers (`需人工`) must never terminate the batch; record them and immediately proceed to subsequent rows.
+Continue processing rows until the batch is exhausted or the invocation limit is reached. Single-task human blockers (`需人工`) must never terminate the batch; record them and immediately proceed to subsequent rows using the separate reusable AI worker.
 
 ## Truthfulness contract
 
