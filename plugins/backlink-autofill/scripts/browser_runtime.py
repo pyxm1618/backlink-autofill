@@ -440,9 +440,13 @@ class BrowserRuntime:
         except Exception:
             return False
 
-    def _acquire_worker_page(self) -> Page:
+    def _acquire_worker_page(self, *, exclude_page: Page | None = None) -> Page:
         assert self._context is not None
-        idle_pages = [page for page in self._context.pages if self._is_idle_worker_page(page)]
+        idle_pages = [
+            page
+            for page in self._context.pages
+            if page is not exclude_page and self._is_idle_worker_page(page)
+        ]
         if idle_pages:
             worker = idle_pages[0]
             # Multiple idle blank pages are AI-owned leftovers, not HUMAN_PENDING tabs.
@@ -568,19 +572,28 @@ class BrowserRuntime:
                     or (self.keep_on_human_blocker and self._stopped_for_human)
                     or (bool(self.resume_target_id) and self._stopped_for_human)
                 )
-                if not preserve_exact_tab:
-                    if self.resume_target_id:
-                        # A resumed pending tab that reached a stable terminal state is no
-                        # longer part of the worker pool; close it as before.
-                        try:
-                            if not self.page.is_closed():
-                                self.page.close()
-                        except Exception:
-                            pass
-                    else:
-                        # Ordinary AI work releases the page back to one reusable idle
-                        # worker instead of creating/closing a renderer for every task.
-                        self._release_worker_page()
+                if preserve_exact_tab:
+                    # The protected page is no longer available to AI automation. Keep it
+                    # untouched and immediately ensure a separate idle worker exists so
+                    # subsequent tasks can continue without reusing the human's tab.
+                    try:
+                        self._acquire_worker_page(exclude_page=self.page)
+                    except Exception:
+                        # Never sacrifice or mutate a human-pending tab merely because a
+                        # replacement worker could not be created; the next run can retry.
+                        pass
+                elif self.resume_target_id:
+                    # A resumed pending tab that reached a stable terminal state is no
+                    # longer part of the worker pool; close it as before.
+                    try:
+                        if not self.page.is_closed():
+                            self.page.close()
+                    except Exception:
+                        pass
+                else:
+                    # Ordinary AI work releases the page back to one reusable idle
+                    # worker instead of creating/closing a renderer for every task.
+                    self._release_worker_page()
             if self._playwright is not None:
                 try:
                     self._playwright.stop()
