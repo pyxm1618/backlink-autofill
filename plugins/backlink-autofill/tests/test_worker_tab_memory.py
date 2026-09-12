@@ -109,8 +109,52 @@ class WorkerTabMemoryTests(unittest.TestCase):
         with urlopen(f"{self.cdp_url}/json/list", timeout=1) as resp:
             return [item for item in json.load(resp) if item.get("type") == "page"]
 
+    def test_00_unknown_blank_page_is_never_claimed_as_ai_worker(self):
+        """An unmarked blank page is unknown/user-owned state, not bootstrap worker inventory."""
+        initial_pages = self._page_targets()
+        unknown = next((item for item in initial_pages if item.get("url") == "about:blank"), None)
+        self.assertIsNotNone(unknown, f"Expected Chrome bootstrap about:blank page: {initial_pages}")
+        unknown_target_id = unknown.get("id")
+        self.assertIsNotNone(unknown_target_id)
+
+        with BrowserRuntime(
+            profile_dir=Path(self.user_data_dir),
+            cdp_url=self.cdp_url,
+            allow_local_fallback=False,
+        ) as runtime:
+            self.assertNotEqual(
+                unknown_target_id,
+                runtime.target_id,
+                "Runtime claimed an unknown blank page instead of creating its own AI worker",
+            )
+            assert runtime._context is not None
+            unknown_page = next(
+                (
+                    page
+                    for page in runtime._context.pages
+                    if runtime._get_page_target_id(page) == unknown_target_id
+                ),
+                None,
+            )
+            self.assertIsNotNone(unknown_page, "Unknown blank page disappeared during worker acquisition")
+            self.assertEqual(unknown_page.url, "about:blank")
+            self.assertFalse(
+                runtime._is_ai_worker_page(unknown_page),
+                "Unknown blank page had its ownership overwritten with the AI worker marker",
+            )
+            ai_worker_pages = [page for page in runtime._context.pages if runtime._is_ai_worker_page(page)]
+            self.assertEqual(
+                1,
+                len(ai_worker_pages),
+                "Worker ownership must identify exactly one reusable AI worker",
+            )
+            self.assertIs(ai_worker_pages[0], runtime.page)
+
+        final_target_ids = [item.get("id") for item in self._page_targets()]
+        self.assertIn(unknown_target_id, final_target_ids, "Unknown blank page was closed by worker lifecycle")
+
     def test_sequential_ordinary_runtimes_reuse_single_idle_worker_tab(self):
-        """Ordinary AI work must reuse one idle worker tab instead of new/close churn."""
+        """Ordinary AI work must reuse one idle AI-owned worker tab instead of new/close churn."""
         with BrowserRuntime(
             profile_dir=Path(self.user_data_dir),
             cdp_url=self.cdp_url,
@@ -138,14 +182,26 @@ class WorkerTabMemoryTests(unittest.TestCase):
                 second_target_id,
                 "Sequential ordinary runtime created a fresh worker tab instead of reusing the idle one",
             )
+            assert second_runtime._context is not None
+            ai_worker_target_ids = [
+                second_runtime._get_page_target_id(page)
+                for page in second_runtime._context.pages
+                if second_runtime._is_ai_worker_page(page)
+            ]
+            self.assertEqual(
+                [second_target_id],
+                ai_worker_target_ids,
+                f"Expected exactly one AI-owned worker target, found {ai_worker_target_ids}",
+            )
 
         final_pages = self._page_targets()
-        self.assertEqual(
-            1,
-            len(final_pages),
-            f"Expected exactly one idle AI worker tab, found {len(final_pages)}: {final_pages}",
+        self.assertIn(
+            second_target_id,
+            [item.get("id") for item in final_pages],
+            "Reusable AI worker disappeared after ordinary runtime exit",
         )
-        self.assertEqual(final_pages[0].get("url"), "about:blank")
+        worker_target = next(item for item in final_pages if item.get("id") == second_target_id)
+        self.assertEqual(worker_target.get("url"), "about:blank")
 
 
 if __name__ == "__main__":
