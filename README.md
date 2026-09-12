@@ -15,10 +15,10 @@ explicit project
 → continue
 ```
 
-**Headless is the default.** Automation runs via a persistent Chrome CDP session (`http://127.0.0.1:9222`, or `BACKLINK_BROWSER_CDP_URL`) reusing a single persistent browser context, avoiding per-task browser spawning:
-- **Terminal task tab cleanup**: When an ordinary task reaches a terminal state (`已提交`, `审核中`, `已排期`, `已上线`, `失败`, `不适用`) and confirms Sheet exact-row read-back, its browser tab is automatically closed;
-- **Non-blocking HUMAN_PENDING**: If a genuine blocker (CAPTCHA, 2FA, SMS, phone, payment) or unresolvable verification occurs, the task enters `需人工` and preserves its tab in the persistent Chrome window. **The batch does NOT stop**—subsequent tasks continue execution immediately;
-- **Best-effort pending cleanup**: When a pending task is resumed and reaches a terminal state, the system attempts an external CDP close on that tab. Cleanup errors do not pollute or revert the confirmed terminal state.
+**Headless is the default.** Automation runs via a persistent Chrome CDP session (`http://127.0.0.1:9222`, or `BACKLINK_BROWSER_CDP_URL`) reusing a single persistent browser context. Ordinary AI work also reuses one idle worker tab to avoid per-task renderer churn:
+- **Bounded AI worker reuse**: Ordinary tasks use one reusable worker tab. After a terminal state (`已提交`, `审核中`, `已排期`, `已上线`, `失败`, `不适用`) and confirmed Sheet exact-row read-back, the worker is reset to `about:blank` and retained for the next task instead of being destroyed and recreated;
+- **Protected non-blocking HUMAN_PENDING**: If a genuine blocker (CAPTCHA, 2FA, SMS, phone, payment) or unresolvable verification occurs, the task enters `需人工` and preserves that exact tab in the persistent Chrome window. The AI does not refresh, reset, close, or reuse that protected tab. A separate idle worker is kept or created so **the batch does NOT stop** and subsequent tasks can continue immediately;
+- **Best-effort pending cleanup**: When a pending task is resumed and reaches a terminal state, the system attempts an external CDP close on that formerly protected tab. Cleanup errors do not pollute or revert the confirmed terminal state.
 
 **Final submit may be automatic.** The agent does not stop merely because a button says Submit, Publish, Launch, Post, Create Listing, or Send for Review. Genuine human-only blockers remain CAPTCHA/Cloudflare, 2FA/passkey/SMS verification, payment, unusual authorization, missing factual information, or an unauthenticated state that local site credentials cannot resolve.
 
@@ -199,7 +199,7 @@ $backlink-autofill
 这次先处理 5 条。
 ```
 
-The agent reads `外链管理`, selects only the current project's eligible rows, and processes them in Sheet order. Ordinary successful rows run without opening a visible browser or asking for per-row confirmation. Upon reaching a terminal status and writing back to Sheet with exact-row confirmation, the corresponding task tab is automatically closed to keep browser resources bounded.
+The agent reads `外链管理`, selects only the current project's eligible rows, and processes them in Sheet order. Ordinary successful rows run without opening a visible browser or asking for per-row confirmation. After a normal terminal outcome and exact-row Sheet read-back, the AI worker is reset to `about:blank` and reused for the next task. A `需人工` tab is instead preserved untouched and remains visible until it is resolved; the AI continues on a separate worker tab.
 
 For a new backlink-platform account, the action plan may include:
 
