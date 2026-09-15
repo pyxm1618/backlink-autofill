@@ -69,6 +69,23 @@ class ResultLifecycleTests(unittest.TestCase):
         self.assertTrue(result["requires_business_confirmation"])
         self.assertEqual(result["business_result"], "unconfirmed")
         self.assertGreaterEqual(result["post_action_observation"]["waited_ms"], 900)
+        self.assertFalse(result["post_action_observation"]["business_terminal_inferred"])
+
+    def test_ambiguous_submit_waits_to_bound_and_returns_recovery_without_retrying(self):
+        result = self.run_cli(
+            "execute",
+            "--url",
+            f"{self.base_url}/ambiguous-submit.html",
+            "--actions-json",
+            json.dumps([{"type": "submit", "selector": "#submit"}]),
+        )
+        self.assertTrue(result["requires_business_confirmation"])
+        self.assertEqual(result["business_result"], "unconfirmed")
+        self.assertFalse(result["post_action_observation"]["business_terminal_inferred"])
+        self.assertGreaterEqual(result["post_action_observation"]["waited_ms"], 2800)
+        self.assertEqual(result["recovery"]["action"], "resume_or_confirm_before_cleanup")
+        submit_actions = [item for item in result["actions"] if item["type"] == "submit"]
+        self.assertEqual(len(submit_actions), 1, "an unresolved result must never trigger a second submit")
 
     def test_recaptcha_incorrect_is_detected_as_human_blocker(self):
         result = self.run_cli(
@@ -90,6 +107,19 @@ class ResultLifecycleTests(unittest.TestCase):
         self.assertIsNone(result["page"]["human_blocker"])
         self.assertTrue(result["requires_business_confirmation"])
         self.assertEqual(result["business_result"], "unconfirmed")
+
+    def test_registration_success_is_still_not_backlink_submission_success(self):
+        result = self.run_cli(
+            "execute",
+            "--url",
+            f"{self.base_url}/registration-success.html",
+            "--actions-json",
+            json.dumps([{"type": "submit", "selector": "#register"}]),
+        )
+        self.assertIn("Account created successfully", result["page"]["body_excerpt"])
+        self.assertTrue(result["requires_business_confirmation"])
+        self.assertEqual(result["business_result"], "unconfirmed")
+        self.assertFalse(result["post_action_observation"]["business_terminal_inferred"])
 
 
 if __name__ == "__main__":
