@@ -130,19 +130,39 @@ def find_chrome() -> str:
     raise RuntimeError("macOS Google Chrome executable was not found")
 
 
+def resolve_browser_binary(explicit_binary: str | None) -> str:
+    """Return a validated caller-selected browser, or the normal Chrome binary."""
+    if explicit_binary is None:
+        return find_chrome()
+    binary = Path(explicit_binary).expanduser().resolve()
+    if not binary.is_file():
+        raise RuntimeError(f"browser executable was not found: {binary}")
+    return str(binary)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start or safely reuse the persistent Chrome CDP session.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--profile-dir", default=str(DEFAULT_PROFILE))
     parser.add_argument("--wait-seconds", type=float, default=DEFAULT_WAIT_SECONDS)
     parser.add_argument("--start-url", default=START_URL)
+    parser.add_argument(
+        "--browser-binary",
+        help="Explicit Chrome/Chromium executable; defaults to the system Google Chrome.",
+    )
     args = parser.parse_args()
 
     port = args.port
     profile = Path(args.profile_dir).expanduser().resolve()
 
     try:
-        status = ensure_browser(port, profile, find_chrome(), args.wait_seconds, args.start_url)
+        status = ensure_browser(
+            port,
+            profile,
+            resolve_browser_binary(args.browser_binary),
+            args.wait_seconds,
+            args.start_url,
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"BLOCKED: {exc}")
         return 2

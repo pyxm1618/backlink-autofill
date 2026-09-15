@@ -224,6 +224,67 @@ class ExecutionStateTests(unittest.TestCase):
             self.assertTrue(res)
             self.assertIsNone(execution_state.load_human_pending(root, "quick-iching", "toollisted"))
 
+    def test_validate_cross_project_sync_mutation_success(self):
+        """跨项目排除同步成功路径：已排除->不适用，失效->失败"""
+        cur_row = {"项目ID": "project-b", "外链ID": "deadsite.com", "状态": "待提交"}
+        master_excluded = {"外链ID": "deadsite.com", "基础状态": "已排除", "基础排除原因": "站点关闭收录"}
+        prop_excluded = {"状态": "不适用", "原因/备注": "平台级不可用：总表已排除"}
+
+        val = execution_state.ProductionSheetGate.validate_cross_project_sync_mutation(
+            cur_row, master_excluded, prop_excluded
+        )
+        self.assertEqual(val["状态"], "不适用")
+
+        master_dead = {"外链ID": "deadsite.com", "基础状态": "失效", "基础排除原因": "域名过期死站"}
+        prop_dead = {"状态": "失败", "原因/备注": "平台级不可用：总表已失效"}
+        val_dead = execution_state.ProductionSheetGate.validate_cross_project_sync_mutation(
+            cur_row, master_dead, prop_dead
+        )
+        self.assertEqual(val_dead["状态"], "失败")
+
+    def test_validate_cross_project_sync_mutation_protects_historical_statuses(self):
+        """跨项目排除同步绝对保护历史状态，非'待提交'行一律拒绝修改"""
+        master_excluded = {"外链ID": "deadsite.com", "基础状态": "已排除", "基础排除原因": "站点关闭收录"}
+        prop = {"状态": "不适用"}
+
+        historical_statuses = ["已提交", "审核中", "已排期", "已上线", "需人工", "处理中"]
+        for st in historical_statuses:
+            cur_row = {"项目ID": "project-b", "外链ID": "deadsite.com", "状态": st}
+            with self.assertRaises(execution_state.EvidenceContractError):
+                execution_state.ProductionSheetGate.validate_cross_project_sync_mutation(
+                    cur_row, master_excluded, prop
+                )
+
+    def test_validate_cross_project_sync_mutation_rejects_ai_only_as_global(self):
+        """AI-only 等项目特定限制严禁作为全局不可用向其他项目传播"""
+        cur_row = {"项目ID": "project-b", "外链ID": "ai-dir.com", "状态": "待提交"}
+        master_ai_only = {"外链ID": "ai-dir.com", "基础状态": "已排除", "实测限制": "仅限AI产品收录"}
+        prop = {"状态": "不适用"}
+        with self.assertRaises(execution_state.EvidenceContractError):
+            execution_state.ProductionSheetGate.validate_cross_project_sync_mutation(
+                cur_row, master_ai_only, prop
+            )
+
+    def test_validate_cross_project_sync_mutation_rejects_paid_only_as_global(self):
+        """Paid-only 等非免费限制严禁作为全局不可用向其他项目传播"""
+        cur_row = {"项目ID": "project-b", "外链ID": "paid-dir.com", "状态": "待提交"}
+        master_paid_only = {"外链ID": "paid-dir.com", "基础状态": "已排除", "实测限制": "paid-only", "价格分类": "付费"}
+        prop = {"状态": "不适用"}
+        with self.assertRaises(execution_state.EvidenceContractError):
+            execution_state.ProductionSheetGate.validate_cross_project_sync_mutation(
+                cur_row, master_paid_only, prop
+            )
+
+    def test_validate_cross_project_sync_mutation_rejects_leakage(self):
+        """跨项目排除同步严禁携带结果链接等私有信息"""
+        cur_row = {"项目ID": "project-b", "外链ID": "deadsite.com", "状态": "待提交"}
+        master_excluded = {"外链ID": "deadsite.com", "基础状态": "已排除"}
+        prop = {"状态": "不适用", "结果链接": "https://deadsite.com/listing/project-a"}
+        with self.assertRaises(execution_state.EvidenceContractError):
+            execution_state.ProductionSheetGate.validate_cross_project_sync_mutation(
+                cur_row, master_excluded, prop
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

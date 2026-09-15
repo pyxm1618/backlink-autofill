@@ -579,7 +579,15 @@ class BrowserRuntime:
 
         if candidate_cdp and cdp_ready:
             try:
-                self._browser = self._playwright.chromium.connect_over_cdp(candidate_cdp)
+                # Existing user-visible CDP sessions may deliberately omit
+                # browser-context management.  Do not apply Playwright's
+                # default download/focus/media overrides to that pre-existing
+                # default context: they are not part of a submission action
+                # and can make an otherwise usable CDP session fail to attach.
+                self._browser = self._playwright.chromium.connect_over_cdp(
+                    candidate_cdp,
+                    no_defaults=True,
+                )
                 if not self._browser.contexts:
                     raise BrowserRuntimeError("NO_BROWSER_CONTEXT", "Connected CDP browser has no contexts")
                 self._context = self._browser.contexts[0]
@@ -604,6 +612,18 @@ class BrowserRuntime:
                     )
                 self.page = matched_page
                 self.target_id = self.resume_target_id
+                try:
+                    # A resumed CDP target may be present but backgrounded. Bring the
+                    # exact recovery target forward before attempting browser actions;
+                    # otherwise Playwright can wait forever for a stable click target.
+                    self.page.bring_to_front()
+                except Exception as exc:
+                    self._playwright.stop()
+                    self._playwright = None
+                    raise BrowserRuntimeError(
+                        "TARGET_TAB_FOCUS_FAILED",
+                        f"Could not focus the requested target tab {self.resume_target_id}",
+                    ) from exc
             else:
                 self.page = self._acquire_worker_page()
                 self._mark_ai_worker_page(self.page)
@@ -647,6 +667,9 @@ class BrowserRuntime:
                 # alone is not terminal completion.
                 preserve_exact_tab = (
                     self.keep_tab
+                    # A resumed HUMAN_PENDING target is not a terminal result.
+                    # It stays available until the explicit resolve command has
+                    # durably recorded a business terminal state.
                     or bool(self.resume_target_id)
                     or self._requires_business_confirmation
                     or (self.keep_on_human_blocker and self._stopped_for_human)
@@ -829,8 +852,10 @@ class BrowserRuntime:
         except CredentialStoreError as exc:
             raise BrowserRuntimeError(exc.code, exc.message) from exc
 
-
-    def _observe_after_result_sensitive_action(self, initial_snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _observe_after_result_sensitive_action(
+        self, initial_snapshot: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Observe exactly one submit/click without inferring a business result."""
         assert self.page is not None
         started = time.monotonic()
         last_snapshot = initial_snapshot
@@ -847,13 +872,11 @@ class BrowserRuntime:
                 current = snapshot_page(self.page)
             except Exception:
                 continue
-
             current_signature = _snapshot_signature(current)
             if current_signature != last_signature:
                 changed = True
                 last_snapshot = current
                 last_signature = current_signature
-
             if current.get("human_blocker"):
                 self._stopped_for_human = True
                 self._last_blocker = current.get("human_blocker")
@@ -895,7 +918,6 @@ class BrowserRuntime:
             "post_action_observation": self._post_action_observation,
             "recovery": recovery,
         }
-
 
     def execute(self, url: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(actions, list):
@@ -970,6 +992,9 @@ class BrowserRuntime:
                         "url": current_page.get("url"),
                         "title": current_page.get("title"),
                     }
+                    # A successful click, unchanged URL, or disabled button is
+                    # never business proof. Preserve this exact target until a
+                    # durable outcome is recorded or a recovery path is saved.
                     self._requires_business_confirmation = True
                     self.keep_tab = True
                     current_page, observation = self._observe_after_result_sensitive_action(current_page)
@@ -999,7 +1024,6 @@ class BrowserRuntime:
                 self._stopped_for_human = True
                 self._last_blocker = current_page.get("human_blocker")
                 return self._execute_result(evidence, current_page, True)
-
         final_page = snapshot_page(self.page)
         return self._execute_result(evidence, final_page, False)
     def resolve_email_otp(self, target_id: str, otp_code: str, wait_timeout_ms: int = 5000) -> dict[str, Any]:
@@ -1261,4 +1285,3 @@ class BrowserRuntime:
             "safe_landed_domain": safe_landed_domain,
             "stopped_for_human": self._stopped_for_human,
         }
-

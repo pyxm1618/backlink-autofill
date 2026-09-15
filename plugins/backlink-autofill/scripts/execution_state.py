@@ -776,6 +776,81 @@ class ProductionSheetGate:
         )
 
     @staticmethod
+    def validate_cross_project_sync_mutation(
+        current_project_row: dict[str, Any],
+        master_row: dict[str, Any],
+        proposed: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate cross-project exclusion sync mutation for other projects under strict safety contract.
+
+        Contract Rules:
+        1. Current status MUST be strictly '待提交'. Never mutate historical statuses (已提交, 审核中, 已排期, 已上线, 需人工, 处理中).
+        2. Master status MUST be '已排除' or '失效'.
+        3. Exclusion MUST be platform-level global unavailable (not project-specific or paid-only).
+        4. Proposed status MUST map accurately: '已排除' -> '不适用', '失效' -> '失败'.
+        5. Proposed 结果链接 MUST be empty (never copy A's result URL or private assets to B).
+        """
+        if not isinstance(current_project_row, dict):
+            raise EvidenceContractError("current_project_row must be a dictionary")
+        if not isinstance(master_row, dict):
+            raise EvidenceContractError("master_row must be a dictionary")
+        if not isinstance(proposed, dict):
+            raise EvidenceContractError("proposed mutation must be a dictionary")
+
+        cur_status = str(current_project_row.get("状态") or "").strip()
+        if cur_status != "待提交":
+            raise EvidenceContractError(
+                f"REJECTED: 跨项目排除同步仅允许更新'待提交'行，当前状态为 {cur_status!r}，绝对禁止修改"
+            )
+
+        master_status = str(master_row.get("基础状态") or "").strip()
+        if master_status not in ("已排除", "失效"):
+            raise EvidenceContractError(
+                f"REJECTED: 跨项目排除同步要求总表状态必须为'已排除'或'失效'，当前为 {master_status!r}"
+            )
+
+        # 检查是否为全局不可用
+        m_reason = str(master_row.get("基础排除原因") or "").strip().lower()
+        m_limits = str(master_row.get("实测限制") or master_row.get("平台备注") or "").strip().lower()
+        m_pricing = str(master_row.get("实测定价") or master_row.get("价格分类") or "").strip().lower()
+
+        if "ai-only" in m_limits or "仅限ai" in m_limits or "ai only" in m_limits or "ai-only" in m_reason or "仅限ai" in m_reason:
+            raise EvidenceContractError(
+                "REJECTED: 平台属于 AI-only 项目特定限制，禁止作为全局不可用向其他项目传播"
+            )
+
+        if (
+            "paid-only" in m_limits
+            or "付费" in m_limits
+            or "非免费" in m_limits
+            or "paid-only" in m_reason
+            or "付费" in m_reason
+            or "非免费" in m_reason
+            or "付费" in m_pricing
+            or "paid" in m_pricing
+        ):
+            raise EvidenceContractError(
+                "REJECTED: 平台属于 paid-only/付费 限制，由各项目政策决定，禁止作为全局不可用向其他项目传播"
+            )
+
+        proposed_status = proposed.get("状态")
+        if master_status == "已排除" and proposed_status != "不适用":
+            raise EvidenceContractError(
+                f"REJECTED: 总表状态为'已排除'时，项目同步状态必须为'不适用'，当前为 {proposed_status!r}"
+            )
+        if master_status == "失效" and proposed_status != "失败":
+            raise EvidenceContractError(
+                f"REJECTED: 总表状态为'失效'时，项目同步状态必须为'失败'，当前为 {proposed_status!r}"
+            )
+
+        if proposed.get("结果链接"):
+            raise EvidenceContractError(
+                "REJECTED: 跨项目排除同步严禁携带结果链接"
+            )
+
+        return dict(proposed)
+
+    @staticmethod
     def filter_recheck_queue(
         project_rows: list[dict[str, Any]],
         selected_project_id: str,

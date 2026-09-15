@@ -146,6 +146,11 @@ def build_parser() -> argparse.ArgumentParser:
     magic_parser.add_argument("--platform-domain", required=True, help="expected platform domain")
     magic_parser.add_argument("--stdin", action="store_true", required=True, help="read magic link URL ephemerally from stdin")
 
+    val_sync_parser = subparsers.add_parser("validate-cross-project-sync")
+    val_sync_parser.add_argument("--current-row-json", required=True)
+    val_sync_parser.add_argument("--master-row-json", required=True)
+    val_sync_parser.add_argument("--proposed-json", required=True)
+
     return parser
 
 
@@ -456,6 +461,27 @@ def main() -> int:
                 resume_target_id=args.target_id,
             ) as runtime:
                 result = runtime.resolve_email_magic_link(args.target_id, magic_url, args.platform_domain)
+
+        elif args.command == "validate-cross-project-sync":
+            try:
+                cur_row = json.loads(args.current_row_json)
+                m_row = json.loads(args.master_row_json)
+                prop = json.loads(args.proposed_json)
+            except json.JSONDecodeError:
+                return _emit_error("INVALID_JSON", "current-row-json, master-row-json and proposed-json must be valid JSON")
+            if not isinstance(cur_row, dict):
+                return _emit_error("INVALID_CURRENT_ROW", "current-row-json must be a JSON object")
+            if not isinstance(m_row, dict):
+                return _emit_error("INVALID_MASTER_ROW", "master-row-json must be a JSON object")
+            if not isinstance(prop, dict):
+                return _emit_error("INVALID_PROPOSED", "proposed-json must be a JSON object")
+
+            validated = ProductionSheetGate.validate_cross_project_sync_mutation(
+                current_project_row=cur_row,
+                master_row=m_row,
+                proposed=prop,
+            )
+            result = {"ok": True, "validated": validated}
 
         else:
             return _emit_error("INVALID_COMMAND", "unsupported command")

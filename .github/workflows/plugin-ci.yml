@@ -54,6 +54,9 @@ jobs:
           JSON
 
           python3 scripts/install-personal.py --repo "$GITHUB_WORKSPACE"
+
+          cmp plugins/backlink-autofill/scripts/browser_cli.py "$HOME/plugins/backlink-autofill/scripts/browser_cli.py"
+          cmp plugins/backlink-autofill/scripts/browser_runtime.py "$HOME/plugins/backlink-autofill/scripts/browser_runtime.py"
           test -f "$HOME/plugins/backlink-autofill/.codex-plugin/plugin.json"
           test -f "$HOME/.backlink-autofill/submitter-profile.json"
           test -d "$HOME/.backlink-autofill/projects"
