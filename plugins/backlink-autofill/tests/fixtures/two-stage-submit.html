@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head><title>Two-stage submit</title></head>
+<body>
+  <button id="submit" type="button">Submit</button>
+  <div id="status">Ready</div>
+  <script>
+    document.querySelector('#submit').addEventListener('click', () => {
+      setTimeout(() => {
+        document.querySelector('#status').textContent = 'Submitting...';
+      }, 300);
+      setTimeout(() => {
+        document.querySelector('#status').textContent = 'Submission accepted after processing';
+      }, 1600);
+    });
+  </script>
+</body>
+</html>
