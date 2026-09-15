@@ -74,6 +74,19 @@ class ResultLifecycleTests(unittest.TestCase):
         self.assertGreaterEqual(result["post_action_observation"]["waited_ms"], 900)
         self.assertFalse(result["post_action_observation"]["business_terminal_inferred"])
 
+    def test_intermediate_processing_state_does_not_end_observation_early(self):
+        result = self.run_cli(
+            "execute",
+            "--url",
+            f"{self.base_url}/two-stage-submit.html",
+            "--actions-json",
+            json.dumps([{"type": "submit", "selector": "#submit"}]),
+        )
+        self.assertIn("Submission accepted after processing", result["page"]["body_excerpt"])
+        self.assertTrue(result["requires_business_confirmation"])
+        self.assertEqual(result["business_result"], "unconfirmed")
+        self.assertGreaterEqual(result["post_action_observation"]["waited_ms"], 2800)
+
     def test_ambiguous_submit_waits_to_bound_and_returns_recovery_without_retrying(self):
         result = self.run_cli(
             "execute",
