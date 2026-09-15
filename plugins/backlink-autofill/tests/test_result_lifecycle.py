@@ -13,6 +13,9 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 CLI = PLUGIN_ROOT / "scripts" / "browser_cli.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+
+from execution_state import classify_project_status
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -120,6 +123,14 @@ class ResultLifecycleTests(unittest.TestCase):
         self.assertTrue(result["requires_business_confirmation"])
         self.assertEqual(result["business_result"], "unconfirmed")
         self.assertFalse(result["post_action_observation"]["business_terminal_inferred"])
+
+    def test_browser_verified_action_does_not_promote_business_status(self):
+        evidence = {
+            "business_result": "unconfirmed",
+            "actions": [{"type": "submit", "status": "verified"}],
+            "body_excerpt": "Account created successfully",
+        }
+        self.assertEqual(classify_project_status(evidence), "待提交")
 
 
 if __name__ == "__main__":
