@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -24,6 +25,9 @@ from credential_store import CredentialStoreError, get_site_password
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 IDLE_WORKER_URLS = {"about:blank", "chrome://newtab/", "chrome://new-tab-page/"}
 AI_WORKER_WINDOW_NAME = "backlink-autofill:ai-worker:v1"
+POST_ACTION_OBSERVE_MS = 3_000
+POST_ACTION_POLL_MS = 200
+POST_ACTION_STABLE_POLLS = 2
 
 
 def _probe_cdp(url: str, timeout: float = 0.5) -> dict | None:
@@ -278,6 +282,9 @@ def detect_human_blocker(page: Page, body_excerpt: str | None = None) -> dict[st
             "human verification",
             "complete the captcha",
             "solve the captcha",
+            "recaptcha incorrect",
+            "captcha incorrect",
+            "captcha verification failed",
         )
     ):
         return {"code": "CAPTCHA", "reason": "Human verification challenge detected"}
@@ -285,7 +292,6 @@ def detect_human_blocker(page: Page, body_excerpt: str | None = None) -> dict[st
     if "passkey" in text or "webauthn" in field_text:
         return {"code": "PASSKEY", "reason": "Passkey authentication requires human interaction"}
 
-    # 邮箱验证码组合证据检测：文案中必须明确具有邮箱/收件箱与验证码的关联上下文
     email_otp_phrases = (
         "verify your email",
         "verify email",
@@ -319,7 +325,6 @@ def detect_human_blocker(page: Page, body_excerpt: str | None = None) -> dict[st
     if has_explicit_email_otp_phrase or has_email_and_code:
         return {"code": "EMAIL_OTP", "reason": "Email verification code required"}
 
-    # 双因子认证：明确包含 2FA/authenticator 提示，或在没有邮箱上下文时的独立 one-time-code
     has_explicit_2fa_phrase = any(
         phrase in text
         for phrase in (
@@ -357,6 +362,14 @@ def snapshot_page(page: Page) -> dict[str, Any]:
         "interactive": _interactive_snapshot(page),
         "human_blocker": detect_human_blocker(page, body_excerpt),
     }
+
+
+def _snapshot_signature(snapshot: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(snapshot.get("url") or ""),
+        str(snapshot.get("title") or ""),
+        str(snapshot.get("body_excerpt") or ""),
+    )
 
 
 class BrowserRuntime:
@@ -400,6 +413,8 @@ class BrowserRuntime:
         self.target_id: str | None = None
         self._stopped_for_human: bool = False
         self._last_blocker: dict[str, str] | None = None
+        self._requires_business_confirmation: bool = False
+        self._post_action_observation: dict[str, Any] | None = None
         self._playwright: Playwright | None = None
         self._browser = None
         self._context: BrowserContext | None = None
@@ -441,7 +456,6 @@ class BrowserRuntime:
             return None
 
     def _active_human_pending_target_ids(self) -> set[str]:
-        """Return unresolved durable HUMAN_PENDING target IDs across all projects."""
         pending_root = self.runtime_root / "human-pending"
         if not pending_root.exists() or not pending_root.is_dir():
             return set()
@@ -502,8 +516,6 @@ class BrowserRuntime:
         ]
         if idle_pages:
             worker = idle_pages[0]
-            # Compact only pages positively identified as AI-owned workers. A blank URL
-            # alone is never ownership evidence, and unresolved pending target IDs win.
             for extra in idle_pages[1:]:
                 try:
                     extra.close()
@@ -511,8 +523,6 @@ class BrowserRuntime:
                     pass
             return worker
 
-        # Ownership is established only by this runtime creating the page. Unknown or
-        # user-owned blank pages are never adopted merely because their URL is idle.
         worker = self._context.new_page()
         self._mark_ai_worker_page(worker)
         return worker
@@ -535,7 +545,6 @@ class BrowserRuntime:
                 )
             self._mark_ai_worker_page(self.page)
         except Exception:
-            # A worker that cannot be reset safely should not linger as an orphan.
             try:
                 if not self.page.is_closed():
                     self.page.close()
@@ -626,27 +635,18 @@ class BrowserRuntime:
     def __exit__(self, exc_type, exc, tb) -> None:
         if self.is_external_cdp:
             if self.page is not None:
-                # Resumed targets are protected until the durable pending record is
-                # explicitly resolved after business-terminal evidence. Blocker absence
-                # alone is not terminal completion.
                 preserve_exact_tab = (
                     self.keep_tab
                     or bool(self.resume_target_id)
+                    or self._requires_business_confirmation
                     or (self.keep_on_human_blocker and self._stopped_for_human)
                 )
                 if preserve_exact_tab:
-                    # The protected page is no longer available to AI automation. Keep it
-                    # untouched and immediately ensure a separate idle worker exists so
-                    # subsequent tasks can continue without reusing the human's tab.
                     try:
                         self._acquire_worker_page(exclude_page=self.page)
                     except Exception:
-                        # Never sacrifice or mutate a human-pending tab merely because a
-                        # replacement worker could not be created; the next run can retry.
                         pass
                 else:
-                    # Ordinary AI work releases the page back to one reusable idle
-                    # worker instead of creating/closing a renderer for every task.
                     self._release_worker_page()
             if self._playwright is not None:
                 try:
@@ -673,8 +673,6 @@ class BrowserRuntime:
     def navigate(self, url: str) -> dict[str, Any]:
         url = _validate_http_url(url)
         assert self.page is not None
-        # When resuming an existing target tab already at the target URL,
-        # avoid a hard reload so in-memory form state (such as an OTP verification screen) is preserved.
         if self.resume_target_id and self.page.url.rstrip("/") == url.rstrip("/"):
             snapshot = snapshot_page(self.page)
             if snapshot.get("human_blocker"):
@@ -775,7 +773,6 @@ class BrowserRuntime:
         if not current_domain:
             raise BrowserRuntimeError("INVALID_CREDENTIAL_DOMAIN", "could not resolve current page domain")
 
-        # 第一层防御：Target Domain Allow Rule
         if self.target_domain:
             allowed = self.target_domain.lower().strip()
             if current_domain != allowed and not current_domain.endswith("." + allowed):
@@ -784,7 +781,6 @@ class BrowserRuntime:
                     f"Current page domain {current_domain!r} does not match allowed target domain {allowed!r}",
                 )
 
-        # 第二层防御：通用第三方 Identity Provider 域名黑名单
         forbidden_idps = (
             "google.com", "accounts.google.com",
             "github.com",
@@ -812,6 +808,74 @@ class BrowserRuntime:
         except CredentialStoreError as exc:
             raise BrowserRuntimeError(exc.code, exc.message) from exc
 
+    def _observe_after_result_sensitive_action(self, initial_snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        assert self.page is not None
+        started = time.monotonic()
+        last_snapshot = initial_snapshot
+        last_signature = _snapshot_signature(initial_snapshot)
+        changed = False
+        stable_after_change = 0
+
+        while True:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            remaining_ms = POST_ACTION_OBSERVE_MS - elapsed_ms
+            if remaining_ms <= 0:
+                break
+            self.page.wait_for_timeout(min(POST_ACTION_POLL_MS, remaining_ms))
+            try:
+                current = snapshot_page(self.page)
+            except Exception:
+                continue
+
+            current_signature = _snapshot_signature(current)
+            if current_signature != last_signature:
+                changed = True
+                stable_after_change = 0
+                last_snapshot = current
+                last_signature = current_signature
+            elif changed:
+                stable_after_change += 1
+
+            if current.get("human_blocker"):
+                self._stopped_for_human = True
+                self._last_blocker = current.get("human_blocker")
+                last_snapshot = current
+                break
+
+            if changed and stable_after_change >= POST_ACTION_STABLE_POLLS:
+                break
+
+        waited_ms = int((time.monotonic() - started) * 1000)
+        return last_snapshot, {
+            "waited_ms": waited_ms,
+            "max_wait_ms": POST_ACTION_OBSERVE_MS,
+            "poll_ms": POST_ACTION_POLL_MS,
+            "page_changed": changed,
+            "business_terminal_inferred": False,
+        }
+
+    def _execute_result(self, evidence: list[dict[str, Any]], page: dict[str, Any], stopped_for_human: bool) -> dict[str, Any]:
+        requires_confirmation = self._requires_business_confirmation
+        recovery = None
+        if requires_confirmation:
+            recovery = {
+                "target_id": self.target_id,
+                "current_url": page.get("url"),
+                "action": "resume_or_confirm_before_cleanup",
+            }
+        return {
+            "ok": True,
+            "actions": evidence,
+            "page": page,
+            "stopped_for_human": stopped_for_human,
+            "target_id": self.target_id,
+            "is_external_cdp": self.is_external_cdp,
+            "requires_business_confirmation": requires_confirmation,
+            "business_result": "unconfirmed" if requires_confirmation else None,
+            "post_action_observation": self._post_action_observation,
+            "recovery": recovery,
+        }
+
     def execute(self, url: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(actions, list):
             raise BrowserRuntimeError("INVALID_ACTIONS", "Actions must be a JSON array")
@@ -824,14 +888,7 @@ class BrowserRuntime:
 
         if initial_page.get("human_blocker"):
             self._stopped_for_human = True
-            return {
-                "ok": True,
-                "actions": evidence,
-                "page": initial_page,
-                "stopped_for_human": True,
-                "target_id": self.target_id,
-                "is_external_cdp": self.is_external_cdp,
-            }
+            return self._execute_result(evidence, initial_page, True)
 
         for index, action in enumerate(actions):
             if not isinstance(action, dict):
@@ -842,6 +899,7 @@ class BrowserRuntime:
                 raise BrowserRuntimeError("INVALID_ACTION", f"Unsupported action type at index {index}")
 
             locator = self._unique_locator(selector)
+            current_page: dict[str, Any] | None = None
             try:
                 if action_type == "fill":
                     self._verify_non_sensitive(locator)
@@ -886,7 +944,16 @@ class BrowserRuntime:
                 elif action_type in {"click", "submit"}:
                     locator.click()
                     self.page.wait_for_timeout(200)
-                    readback = {"url": self.page.url, "title": self.page.title()}
+                    current_page = snapshot_page(self.page)
+                    readback = {"url": current_page.get("url"), "title": current_page.get("title")}
+                    self._requires_business_confirmation = True
+                    # A successful browser action is not a business-terminal backlink result.
+                    # On external CDP, hold the exact target until the result-confirmation /
+                    # recovery layer records a terminal business state and explicitly cleans up.
+                    self.keep_tab = True
+                    current_page, observation = self._observe_after_result_sensitive_action(current_page)
+                    observation.update({"action_index": index, "action_type": action_type})
+                    self._post_action_observation = observation
 
                 evidence.append(
                     {
@@ -905,31 +972,19 @@ class BrowserRuntime:
                     f"Browser action {index} ({action_type}) failed for selector {selector!r}: {type(exc).__name__}",
                 ) from exc
 
-            current_page = snapshot_page(self.page)
+            if current_page is None:
+                current_page = snapshot_page(self.page)
             if current_page.get("human_blocker"):
                 self._stopped_for_human = True
                 self._last_blocker = current_page.get("human_blocker")
-                return {
-                    "ok": True,
-                    "actions": evidence,
-                    "page": current_page,
-                    "stopped_for_human": True,
-                    "target_id": self.target_id,
-                    "is_external_cdp": self.is_external_cdp,
-                }
+                return self._execute_result(evidence, current_page, True)
 
-        return {
-            "ok": True,
-            "actions": evidence,
-            "page": snapshot_page(self.page),
-            "stopped_for_human": False,
-            "target_id": self.target_id,
-            "is_external_cdp": self.is_external_cdp,
-        }
+        final_page = snapshot_page(self.page)
+        return self._execute_result(evidence, final_page, False)
 
     def resolve_email_otp(self, target_id: str, otp_code: str, wait_timeout_ms: int = 5000) -> dict[str, Any]:
         """Fill ephemeral email verification code into target tab and submit.
-        
+
         Security guarantees:
         - Never returns or echoes the OTP code in result dictionary.
         - Preserves existing tab state; does not reload or restart page.
@@ -1008,7 +1063,6 @@ class BrowserRuntime:
             "stopped_for_human": self._stopped_for_human,
         }
 
-
     def resolve_email_magic_link(self, target_id: str, magic_link: str, platform_domain: str) -> dict[str, Any]:
         """Navigate to verified email Magic Link and confirm platform identity closure.
 
@@ -1016,13 +1070,7 @@ class BrowserRuntime:
         - Never echoes the tokenized URL in return value, logs, or exceptions.
         - Enforces initial DNS boundary check before navigating: host must be platform domain or approved ESP.
         - Enforces two-layer safety: verifies closure does not land on protected primary IdP.
-        - Strictly decouples Safe Navigation / Platform Closure from Verification Success:
-          * Query validation uses parse_qs for exact key/value matching (no substring containment).
-          * Rejects invalid/expired paths (/invalid, /expired, etc.) and unverified parameters.
-          * Blocker-cleared transition strictly requires prior blocker to be EMAIL_OTP and
-            requires positive continuation evidence (generic homepage is rejected).
-          * Plain stopped=True -> blocker=None alone is NEVER considered verification success.
-          * Lacking positive proof raises MAGIC_LINK_UNCONFIRMED.
+        - Strictly decouples Safe Navigation / Platform Closure from Verification Success.
         """
         from email_otp_resolver import is_allowed_initial_magic_link_host, validate_magic_link_closure
 
@@ -1070,7 +1118,6 @@ class BrowserRuntime:
         final_path = parsed_final.path.lower()
         path_segments = [s for s in final_path.split("/") if s]
 
-        # 1. 明确的 invalid / expired 路径拦截 (/invalid, /expired 等)
         invalid_expired_path_tokens = {"invalid", "expired", "token-expired", "link-expired", "already-used", "link-invalid", "token-invalid"}
         if any(seg in invalid_expired_path_tokens for seg in path_segments) or any(
             p in final_path for p in ("/invalid", "/expired", "/token-expired", "/link-expired", "/already-used")
@@ -1080,7 +1127,6 @@ class BrowserRuntime:
                 f"Magic link reached invalid or expired path: {final_path}",
             )
 
-        # 2. Query 严格使用 parse_qs 校验 (拒绝 substring 假匹配，拦截 unverified=true 等)
         query_params = parse_qs(parsed_final.query)
         reject_query_keys = {"error", "expired", "invalid", "unverified", "not_verified"}
         for qk, qvals in query_params.items():
@@ -1096,7 +1142,6 @@ class BrowserRuntime:
                     "Magic link query status indicates expired or invalid",
                 )
 
-        # 检查 DOM 文本中明确的失效/过期短语
         expired_invalid_dom_phrases = (
             "link has expired", "token has expired", "link is expired", "link expired",
             "magic link expired", "link is invalid", "invalid verification link",
@@ -1109,7 +1154,6 @@ class BrowserRuntime:
                 "Magic link has expired, is invalid, or has already been used",
             )
 
-        # 3. 检查正面验证成功证据 (Positive Verification Evidence)
         SUCCESS_QUERY_KEYS = {
             "verified": {"true", "1", "yes", "success"},
             "verify": {"true", "1", "yes", "success"},
@@ -1139,7 +1183,6 @@ class BrowserRuntime:
         )
         has_explicit_dom_success = any(phrase in body_lower for phrase in explicit_dom_success_phrases)
 
-        # 4. blocker-cleared transition：必须确认 prior blocker 是 EMAIL_OTP，且具备可信 continuation 证据
         path_stripped = final_path.strip("/")
         has_session_markers = any(cue in body_lower for cue in ("logout", "sign out", "my account", "sign-out", "log-out"))
         is_generic_homepage = (path_stripped == "" and not parsed_final.query)
@@ -1170,7 +1213,6 @@ class BrowserRuntime:
                 "Magic link landed on platform but lacks definitive verification success evidence or verified continuation",
             )
 
-        # 正面证据确凿，解除 human blocker 停顿
         if not current_snapshot.get("human_blocker"):
             self._stopped_for_human = False
             self._last_blocker = None
@@ -1186,4 +1228,3 @@ class BrowserRuntime:
             "safe_landed_domain": safe_landed_domain,
             "stopped_for_human": self._stopped_for_human,
         }
-
