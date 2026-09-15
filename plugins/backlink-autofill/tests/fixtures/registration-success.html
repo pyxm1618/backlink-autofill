@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Registration Success</title></head>
+<body>
+  <form id="registration-form">
+    <input id="email" name="email" value="test@example.com">
+    <button id="register" type="submit">Create account</button>
+  </form>
+  <div id="status">Ready</div>
+  <script>
+    document.getElementById('registration-form').addEventListener('submit', function (event) {
+      event.preventDefault();
+      document.getElementById('status').textContent = 'Account created successfully';
+    });
+  </script>
+</body></html>
