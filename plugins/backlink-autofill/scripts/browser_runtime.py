@@ -830,178 +830,178 @@ class BrowserRuntime:
             raise BrowserRuntimeError(exc.code, exc.message) from exc
 
 
-def _observe_after_result_sensitive_action(self, initial_snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    assert self.page is not None
-    started = time.monotonic()
-    last_snapshot = initial_snapshot
-    last_signature = _snapshot_signature(initial_snapshot)
-    changed = False
+    def _observe_after_result_sensitive_action(self, initial_snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        assert self.page is not None
+        started = time.monotonic()
+        last_snapshot = initial_snapshot
+        last_signature = _snapshot_signature(initial_snapshot)
+        changed = False
 
-    while True:
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        remaining_ms = POST_ACTION_OBSERVE_MS - elapsed_ms
-        if remaining_ms <= 0:
-            break
-        self.page.wait_for_timeout(min(POST_ACTION_POLL_MS, remaining_ms))
-        try:
-            current = snapshot_page(self.page)
-        except Exception:
-            continue
+        while True:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            remaining_ms = POST_ACTION_OBSERVE_MS - elapsed_ms
+            if remaining_ms <= 0:
+                break
+            self.page.wait_for_timeout(min(POST_ACTION_POLL_MS, remaining_ms))
+            try:
+                current = snapshot_page(self.page)
+            except Exception:
+                continue
 
-        current_signature = _snapshot_signature(current)
-        if current_signature != last_signature:
-            changed = True
-            last_snapshot = current
-            last_signature = current_signature
+            current_signature = _snapshot_signature(current)
+            if current_signature != last_signature:
+                changed = True
+                last_snapshot = current
+                last_signature = current_signature
 
-        if current.get("human_blocker"):
-            self._stopped_for_human = True
-            self._last_blocker = current.get("human_blocker")
-            last_snapshot = current
-            break
+            if current.get("human_blocker"):
+                self._stopped_for_human = True
+                self._last_blocker = current.get("human_blocker")
+                last_snapshot = current
+                break
 
-    waited_ms = int((time.monotonic() - started) * 1000)
-    return last_snapshot, {
-        "waited_ms": waited_ms,
-        "max_wait_ms": POST_ACTION_OBSERVE_MS,
-        "poll_ms": POST_ACTION_POLL_MS,
-        "page_changed": changed,
-        "business_terminal_inferred": False,
-    }
-
-def _execute_result(
-    self,
-    evidence: list[dict[str, Any]],
-    page: dict[str, Any],
-    stopped_for_human: bool,
-) -> dict[str, Any]:
-    requires_confirmation = self._requires_business_confirmation
-    recovery = None
-    if requires_confirmation:
-        recovery = {
-            "target_id": self.target_id,
-            "current_url": page.get("url"),
-            "action": "resume_or_confirm_before_cleanup",
+        waited_ms = int((time.monotonic() - started) * 1000)
+        return last_snapshot, {
+            "waited_ms": waited_ms,
+            "max_wait_ms": POST_ACTION_OBSERVE_MS,
+            "poll_ms": POST_ACTION_POLL_MS,
+            "page_changed": changed,
+            "business_terminal_inferred": False,
         }
-    return {
-        "ok": True,
-        "actions": evidence,
-        "page": page,
-        "stopped_for_human": stopped_for_human,
-        "target_id": self.target_id,
-        "is_external_cdp": self.is_external_cdp,
-        "requires_business_confirmation": requires_confirmation,
-        "business_result": "unconfirmed" if requires_confirmation else None,
-        "post_action_observation": self._post_action_observation,
-        "recovery": recovery,
-    }
+
+    def _execute_result(
+        self,
+        evidence: list[dict[str, Any]],
+        page: dict[str, Any],
+        stopped_for_human: bool,
+    ) -> dict[str, Any]:
+        requires_confirmation = self._requires_business_confirmation
+        recovery = None
+        if requires_confirmation:
+            recovery = {
+                "target_id": self.target_id,
+                "current_url": page.get("url"),
+                "action": "resume_or_confirm_before_cleanup",
+            }
+        return {
+            "ok": True,
+            "actions": evidence,
+            "page": page,
+            "stopped_for_human": stopped_for_human,
+            "target_id": self.target_id,
+            "is_external_cdp": self.is_external_cdp,
+            "requires_business_confirmation": requires_confirmation,
+            "business_result": "unconfirmed" if requires_confirmation else None,
+            "post_action_observation": self._post_action_observation,
+            "recovery": recovery,
+        }
 
 
-def execute(self, url: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
-    if not isinstance(actions, list):
-        raise BrowserRuntimeError("INVALID_ACTIONS", "Actions must be a JSON array")
-    if len(actions) > MAX_ACTIONS:
-        raise BrowserRuntimeError("TOO_MANY_ACTIONS", f"At most {MAX_ACTIONS} browser actions are allowed per plan")
+    def execute(self, url: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
+        if not isinstance(actions, list):
+            raise BrowserRuntimeError("INVALID_ACTIONS", "Actions must be a JSON array")
+        if len(actions) > MAX_ACTIONS:
+            raise BrowserRuntimeError("TOO_MANY_ACTIONS", f"At most {MAX_ACTIONS} browser actions are allowed per plan")
 
-    initial_page = self.navigate(url)
-    assert self.page is not None
-    evidence: list[dict[str, Any]] = []
+        initial_page = self.navigate(url)
+        assert self.page is not None
+        evidence: list[dict[str, Any]] = []
 
-    if initial_page.get("human_blocker"):
-        self._stopped_for_human = True
-        return self._execute_result(evidence, initial_page, True)
-
-    for index, action in enumerate(actions):
-        if not isinstance(action, dict):
-            raise BrowserRuntimeError("INVALID_ACTION", f"Action {index} must be an object")
-        action_type = action.get("type")
-        selector = action.get("selector")
-        if action_type not in _ALLOWED_ACTIONS:
-            raise BrowserRuntimeError("INVALID_ACTION", f"Unsupported action type at index {index}")
-
-        locator = self._unique_locator(selector)
-        current_page: dict[str, Any] | None = None
-        try:
-            if action_type == "fill":
-                self._verify_non_sensitive(locator)
-                value = action.get("value")
-                if not isinstance(value, str):
-                    raise BrowserRuntimeError("INVALID_ACTION", f"Fill action {index} requires a string value")
-                locator.fill(value)
-                readback = locator.input_value()
-                if readback != value:
-                    raise BrowserRuntimeError("READBACK_MISMATCH", f"Fill read-back mismatch at action {index}")
-
-            elif action_type == "credential_fill":
-                self._verify_password_target(locator)
-                password = self._site_password_for_action(action)
-                locator.fill(password)
-                if locator.input_value() != password:
-                    raise BrowserRuntimeError("READBACK_MISMATCH", f"Credential fill read-back mismatch at action {index}")
-                readback = {"credential": "site_password", "verified": True}
-
-            elif action_type == "select":
-                value = action.get("value")
-                if not isinstance(value, str):
-                    raise BrowserRuntimeError("INVALID_ACTION", f"Select action {index} requires a string value")
-                locator.select_option(value=value)
-                readback = locator.input_value()
-                if readback != value:
-                    raise BrowserRuntimeError("READBACK_MISMATCH", f"Select read-back mismatch at action {index}")
-
-            elif action_type == "check":
-                locator.check()
-                readback = locator.is_checked()
-                if readback is not True:
-                    raise BrowserRuntimeError("READBACK_MISMATCH", f"Checkbox read-back mismatch at action {index}")
-
-            elif action_type == "upload":
-                path = self._resolve_upload(action.get("path"))
-                locator.set_input_files(str(path))
-                readback = locator.evaluate("el => el.files && el.files.length ? el.files[0].name : ''")
-                if readback != path.name:
-                    raise BrowserRuntimeError("READBACK_MISMATCH", f"Upload read-back mismatch at action {index}")
-
-            elif action_type in {"click", "submit"}:
-                locator.click()
-                self.page.wait_for_timeout(200)
-                current_page = snapshot_page(self.page)
-                readback = {
-                    "url": current_page.get("url"),
-                    "title": current_page.get("title"),
-                }
-                self._requires_business_confirmation = True
-                self.keep_tab = True
-                current_page, observation = self._observe_after_result_sensitive_action(current_page)
-                observation.update({"action_index": index, "action_type": action_type})
-                self._post_action_observation = observation
-
-            evidence.append(
-                {
-                    "index": index,
-                    "type": action_type,
-                    "selector": selector,
-                    "status": "verified",
-                    "readback": readback,
-                }
-            )
-        except BrowserRuntimeError:
-            raise
-        except Exception as exc:
-            raise BrowserRuntimeError(
-                "ACTION_FAILED",
-                f"Browser action {index} ({action_type}) failed for selector {selector!r}: {type(exc).__name__}",
-            ) from exc
-
-        if current_page is None:
-            current_page = snapshot_page(self.page)
-        if current_page.get("human_blocker"):
+        if initial_page.get("human_blocker"):
             self._stopped_for_human = True
-            self._last_blocker = current_page.get("human_blocker")
-            return self._execute_result(evidence, current_page, True)
+            return self._execute_result(evidence, initial_page, True)
 
-    final_page = snapshot_page(self.page)
-    return self._execute_result(evidence, final_page, False)
+        for index, action in enumerate(actions):
+            if not isinstance(action, dict):
+                raise BrowserRuntimeError("INVALID_ACTION", f"Action {index} must be an object")
+            action_type = action.get("type")
+            selector = action.get("selector")
+            if action_type not in _ALLOWED_ACTIONS:
+                raise BrowserRuntimeError("INVALID_ACTION", f"Unsupported action type at index {index}")
+
+            locator = self._unique_locator(selector)
+            current_page: dict[str, Any] | None = None
+            try:
+                if action_type == "fill":
+                    self._verify_non_sensitive(locator)
+                    value = action.get("value")
+                    if not isinstance(value, str):
+                        raise BrowserRuntimeError("INVALID_ACTION", f"Fill action {index} requires a string value")
+                    locator.fill(value)
+                    readback = locator.input_value()
+                    if readback != value:
+                        raise BrowserRuntimeError("READBACK_MISMATCH", f"Fill read-back mismatch at action {index}")
+
+                elif action_type == "credential_fill":
+                    self._verify_password_target(locator)
+                    password = self._site_password_for_action(action)
+                    locator.fill(password)
+                    if locator.input_value() != password:
+                        raise BrowserRuntimeError("READBACK_MISMATCH", f"Credential fill read-back mismatch at action {index}")
+                    readback = {"credential": "site_password", "verified": True}
+
+                elif action_type == "select":
+                    value = action.get("value")
+                    if not isinstance(value, str):
+                        raise BrowserRuntimeError("INVALID_ACTION", f"Select action {index} requires a string value")
+                    locator.select_option(value=value)
+                    readback = locator.input_value()
+                    if readback != value:
+                        raise BrowserRuntimeError("READBACK_MISMATCH", f"Select read-back mismatch at action {index}")
+
+                elif action_type == "check":
+                    locator.check()
+                    readback = locator.is_checked()
+                    if readback is not True:
+                        raise BrowserRuntimeError("READBACK_MISMATCH", f"Checkbox read-back mismatch at action {index}")
+
+                elif action_type == "upload":
+                    path = self._resolve_upload(action.get("path"))
+                    locator.set_input_files(str(path))
+                    readback = locator.evaluate("el => el.files && el.files.length ? el.files[0].name : ''")
+                    if readback != path.name:
+                        raise BrowserRuntimeError("READBACK_MISMATCH", f"Upload read-back mismatch at action {index}")
+
+                elif action_type in {"click", "submit"}:
+                    locator.click()
+                    self.page.wait_for_timeout(200)
+                    current_page = snapshot_page(self.page)
+                    readback = {
+                        "url": current_page.get("url"),
+                        "title": current_page.get("title"),
+                    }
+                    self._requires_business_confirmation = True
+                    self.keep_tab = True
+                    current_page, observation = self._observe_after_result_sensitive_action(current_page)
+                    observation.update({"action_index": index, "action_type": action_type})
+                    self._post_action_observation = observation
+
+                evidence.append(
+                    {
+                        "index": index,
+                        "type": action_type,
+                        "selector": selector,
+                        "status": "verified",
+                        "readback": readback,
+                    }
+                )
+            except BrowserRuntimeError:
+                raise
+            except Exception as exc:
+                raise BrowserRuntimeError(
+                    "ACTION_FAILED",
+                    f"Browser action {index} ({action_type}) failed for selector {selector!r}: {type(exc).__name__}",
+                ) from exc
+
+            if current_page is None:
+                current_page = snapshot_page(self.page)
+            if current_page.get("human_blocker"):
+                self._stopped_for_human = True
+                self._last_blocker = current_page.get("human_blocker")
+                return self._execute_result(evidence, current_page, True)
+
+        final_page = snapshot_page(self.page)
+        return self._execute_result(evidence, final_page, False)
     def resolve_email_otp(self, target_id: str, otp_code: str, wait_timeout_ms: int = 5000) -> dict[str, Any]:
         """Fill ephemeral email verification code into target tab and submit.
         
