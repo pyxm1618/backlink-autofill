@@ -5,9 +5,6 @@ on:
     branches: ['feat/codex-plugin', 'main']
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -15,42 +12,6 @@ jobs:
       BACKLINK_ALLOW_LOCAL_FALLBACK: "1"
     steps:
       - uses: actions/checkout@v4
-      - name: Repair lifecycle method indentation on PR head
-        if: github.event_name == 'pull_request' && github.head_ref == 'fix/20260915-browser-result-lifecycle'
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-        run: |
-          git fetch origin "refs/heads/$HEAD_REF:refs/remotes/origin/$HEAD_REF"
-          git checkout -B "$HEAD_REF" "origin/$HEAD_REF"
-          python3 - <<'PY'
-          from pathlib import Path
-          import textwrap
-
-          path = Path('plugins/backlink-autofill/scripts/browser_runtime.py')
-          text = path.read_text(encoding='utf-8')
-          module_marker = '\ndef _observe_after_result_sensitive_action('
-          class_marker = '\n    def _observe_after_result_sensitive_action('
-          if class_marker in text:
-              print('lifecycle methods already attached to BrowserRuntime')
-              raise SystemExit(0)
-          if module_marker not in text:
-              raise SystemExit('module-level lifecycle helper marker not found')
-          start = text.index(module_marker) + 1
-          end_marker = '\n    def resolve_email_otp('
-          end = text.index(end_marker, start)
-          block = text[start:end]
-          repaired = textwrap.indent(block, '    ')
-          text = text[:start] + repaired + text[end:]
-          path.write_text(text, encoding='utf-8')
-          PY
-          git diff --check
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add plugins/backlink-autofill/scripts/browser_runtime.py
-          if ! git diff --cached --quiet; then
-            git commit -m "fix(browser): attach lifecycle helpers to runtime"
-            git push origin "HEAD:$HEAD_REF"
-          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -149,6 +110,7 @@ jobs:
           PY
 
           python3 scripts/install-personal.py --repo "$GITHUB_WORKSPACE"
+
           cmp plugins/backlink-autofill/scripts/browser_cli.py "$HOME/plugins/backlink-autofill/scripts/browser_cli.py"
           cmp plugins/backlink-autofill/scripts/browser_runtime.py "$HOME/plugins/backlink-autofill/scripts/browser_runtime.py"
 
