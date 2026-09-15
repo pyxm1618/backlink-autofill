@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Delayed Submit</title></head>
+<body>
+  <form id="listing-form">
+    <input id="website" name="website" value="https://example.com/">
+    <button id="submit" type="submit">Submit listing</button>
+  </form>
+  <div id="status">Ready</div>
+  <script>
+    document.getElementById('listing-form').addEventListener('submit', function (event) {
+      event.preventDefault();
+      const button = document.getElementById('submit');
+      button.disabled = true;
+      document.getElementById('status').textContent = 'Submitting';
+      setTimeout(function () {
+        document.getElementById('status').textContent = 'Submission received after delay';
+        button.disabled = false;
+      }, 900);
+    });
+  </script>
+</body></html>
