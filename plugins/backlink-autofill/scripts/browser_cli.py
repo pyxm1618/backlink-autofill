@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -42,6 +43,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cdp-url", help="CDP endpoint URL (e.g. http://127.0.0.1:9222)")
     parser.add_argument("--allow-local-fallback", action="store_true", default=None, help="allow fallback to local Chromium in CI/test")
     parser.add_argument("--keep-on-human-blocker", action="store_true", help="keep tab open on human blocker")
+    parser.add_argument("--keep-tab", action="store_true", help="keep the exact CDP target open after the command")
     parser.add_argument("--target-id", help="CDP target ID to attach/resume")
     parser.add_argument("--target-domain", help="Allowed target domain for credential fill")
 
@@ -177,6 +179,7 @@ def main() -> int:
                 cdp_url=args.cdp_url,
                 allow_local_fallback=args.allow_local_fallback,
                 keep_on_human_blocker=args.keep_on_human_blocker,
+                keep_tab=args.keep_tab,
                 resume_target_id=args.target_id,
                 target_domain=args.target_domain,
             ) as runtime:
@@ -196,7 +199,11 @@ def main() -> int:
                 credential_root=Path(args.credential_root) if args.credential_root else None,
                 cdp_url=args.cdp_url,
                 allow_local_fallback=args.allow_local_fallback,
-                keep_on_human_blocker=args.keep_on_human_blocker,
+                # Execute is a submission workflow: a detected human blocker must
+                # always retain the exact target even when the caller omitted the
+                # optional inspect-oriented flag.
+                keep_on_human_blocker=True,
+                keep_tab=args.keep_tab,
                 resume_target_id=args.target_id,
                 target_domain=args.target_domain,
             ) as runtime:
@@ -424,6 +431,7 @@ def main() -> int:
                 headless=not args.headed,
                 cdp_url=args.cdp_url,
                 allow_local_fallback=args.allow_local_fallback,
+                keep_tab=args.keep_tab,
                 resume_target_id=args.target_id,
             ) as runtime:
                 result = runtime.resolve_email_otp(args.target_id, otp_code)
@@ -444,6 +452,7 @@ def main() -> int:
                 headless=not args.headed,
                 cdp_url=args.cdp_url,
                 allow_local_fallback=args.allow_local_fallback,
+                keep_tab=args.keep_tab,
                 resume_target_id=args.target_id,
             ) as runtime:
                 result = runtime.resolve_email_magic_link(args.target_id, magic_url, args.platform_domain)
