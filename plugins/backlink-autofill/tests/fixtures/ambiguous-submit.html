@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Ambiguous Submit</title></head>
+<body>
+  <form id="listing-form">
+    <input id="website" name="website" value="https://example.com/">
+    <button id="submit" type="submit">Submit listing</button>
+  </form>
+  <div id="status">Ready</div>
+  <script>
+    document.getElementById('listing-form').addEventListener('submit', function (event) {
+      event.preventDefault();
+      document.getElementById('submit').disabled = true;
+      // Deliberately provide no success/failure receipt. The runtime must not infer one.
+    });
+  </script>
+</body></html>
