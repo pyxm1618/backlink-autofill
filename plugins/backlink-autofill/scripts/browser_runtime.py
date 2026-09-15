@@ -27,7 +27,6 @@ IDLE_WORKER_URLS = {"about:blank", "chrome://newtab/", "chrome://new-tab-page/"}
 AI_WORKER_WINDOW_NAME = "backlink-autofill:ai-worker:v1"
 POST_ACTION_OBSERVE_MS = 3_000
 POST_ACTION_POLL_MS = 200
-POST_ACTION_STABLE_POLLS = 2
 
 
 def _probe_cdp(url: str, timeout: float = 0.5) -> dict | None:
@@ -814,7 +813,6 @@ class BrowserRuntime:
         last_snapshot = initial_snapshot
         last_signature = _snapshot_signature(initial_snapshot)
         changed = False
-        stable_after_change = 0
 
         while True:
             elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -830,19 +828,12 @@ class BrowserRuntime:
             current_signature = _snapshot_signature(current)
             if current_signature != last_signature:
                 changed = True
-                stable_after_change = 0
                 last_snapshot = current
                 last_signature = current_signature
-            elif changed:
-                stable_after_change += 1
-
             if current.get("human_blocker"):
                 self._stopped_for_human = True
                 self._last_blocker = current.get("human_blocker")
                 last_snapshot = current
-                break
-
-            if changed and stable_after_change >= POST_ACTION_STABLE_POLLS:
                 break
 
         waited_ms = int((time.monotonic() - started) * 1000)
