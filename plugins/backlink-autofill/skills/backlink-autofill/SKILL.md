@@ -28,7 +28,9 @@ Do not narrate every successful row. Interrupt the user only for a genuine human
 ## Hard gates
 
 1. **Project selection is explicit.** Read `../../references/project-registry.json`. The user must name/select a project. Never infer it from the website, previous run, or the fact that only one project exists.
-2. **Project isolation is strict.** Read project-specific facts/assets only for the selected project. Mutate only Sheet rows whose `项目ID` exactly equals that selected project ID.
+2. **Project isolation is strict (with authorized limited Global Exclusion Sync exception).** Read project-specific facts/assets only for the selected project. During routine submission, mutate only Sheet rows whose `项目ID` exactly equals that selected project ID.
+   - **Authorized Exception (Cross-Project Global Exclusion Sync)**: When a platform has verifiable evidence of platform-level global unavailability (permanently closed, dead domain / NXDOMAIN, shutting down submissions), the agent updates `外链总表` (`已排除`/`失效`) and is authorized to sync other projects' unstarted `待提交` rows to `不适用` or `失败` via `ProductionSheetGate.validate_cross_project_sync_mutation`.
+   - **Strict Sync Boundaries**: Must locate by stable `项目ID + 外链ID`; must re-verify current row status is strictly `待提交` before write; never overwrite `已提交`, `审核中`, `已排期`, `已上线`, `需人工`, or `处理中`; never copy A's project-specific constraints, assets, or result URLs to B; platform restrictions like AI-only or Paid-only are NOT global exclusions and must never trigger cross-project exclusion sync.
 3. **Browser action evidence is mandatory.** Never claim navigation, filling, clicking, uploading, submitting, login, or success from intention. A browser action must actually run and its returned state/read-back must support the claim.
 4. **Browser and Control Plane are strictly separated.** Google Sheets is structured control data. Never use browser automation to read or edit Google Sheets. Browser runtime strictly forbids navigating to or mutating Google Sheets/Drive control plane URLs (`CONTROL_PLANE_URL_FORBIDDEN`). Use the official Google Drive/Sheets API/connector for bounded reads and exact writes. Every Sheet mutation must be verified by an immediate exact-row read-back.
 5. **Security challenges are human-only.** Never solve or bypass CAPTCHA, Cloudflare/Turnstile, 2FA, passkeys, SMS/phone verification, or similar controls.
@@ -397,7 +399,7 @@ The validator strictly enforces:
 - `原因/备注`: Concise human-readable note explaining the status or blocker.
 - `证据摘要`: Short factual evidence observed in browser.
 
-**Always re-read the exact row immediately after every Sheet mutation** and verify values. Never mutate another project's row.
+**Always re-read the exact row immediately after every Sheet mutation** and verify values. Never mutate another project's row (except for authorized global exclusion sync of unstarted `待提交` rows through `validate-cross-project-sync`).
 
 ### 11. Enrich master facts from direct observation only
 

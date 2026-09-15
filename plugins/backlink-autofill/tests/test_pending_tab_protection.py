@@ -165,7 +165,6 @@ class PendingTabProtectionTests(unittest.TestCase):
                         target_id=pending_target,
                     )
                     assert pending_rt.page is not None
-                    # Simulate the human moving the still-unresolved pending page to blank.
                     pending_rt.page.goto("about:blank", wait_until="commit")
 
                 with BrowserRuntime(
@@ -216,8 +215,6 @@ class PendingTabProtectionTests(unittest.TestCase):
                         target_id=pending_target,
                     )
 
-                # Simulate the human solving the CAPTCHA and landing on a normal, still-unsubmitted form.
-                # A single inspect sees no blocker, but the durable pending record is intentionally unresolved.
                 with BrowserRuntime(
                     profile_dir=Path(self.user_data_dir),
                     cdp_url=self.cdp_url,
@@ -256,6 +253,34 @@ class PendingTabProtectionTests(unittest.TestCase):
                 targets_after_resolve = self._page_targets()
                 self.assertNotIn(pending_target, [item.get("id") for item in targets_after_resolve])
                 self.assertIsNone(find_human_pending(runtime_root, project_id, backlink_id))
+
+    def test_execute_submit_target_is_not_reset_before_business_confirmation(self):
+        """A submit/click action is not business-terminal; the exact target must survive CLI exit for result confirmation."""
+        cmd = [
+            sys.executable,
+            str(CLI),
+            "execute",
+            "--profile-dir", self.user_data_dir,
+            "--browser-channel", "chromium",
+            "--cdp-url", self.cdp_url,
+            "--url", f"{self.base_url}/delayed-submit.html",
+            "--actions-json", json.dumps([{"type": "submit", "selector": "#submit"}]),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertTrue(result["requires_business_confirmation"])
+        target_id = result["target_id"]
+        self.assertIsNotNone(target_id)
+
+        targets = {item.get("id"): item for item in self._page_targets()}
+        self.assertIn(target_id, targets)
+        self.assertIn(
+            "/delayed-submit.html",
+            targets[target_id].get("url", ""),
+            "execute reset the target to about:blank before the business result was confirmed",
+        )
+        self._close_target(target_id)
 
 
 if __name__ == "__main__":

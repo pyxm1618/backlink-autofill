@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -42,6 +43,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cdp-url", help="CDP endpoint URL (e.g. http://127.0.0.1:9222)")
     parser.add_argument("--allow-local-fallback", action="store_true", default=None, help="allow fallback to local Chromium in CI/test")
     parser.add_argument("--keep-on-human-blocker", action="store_true", help="keep tab open on human blocker")
+    parser.add_argument("--keep-tab", action="store_true", help="keep the exact CDP target open after the command")
     parser.add_argument("--target-id", help="CDP target ID to attach/resume")
     parser.add_argument("--target-domain", help="Allowed target domain for credential fill")
 
@@ -144,6 +146,11 @@ def build_parser() -> argparse.ArgumentParser:
     magic_parser.add_argument("--platform-domain", required=True, help="expected platform domain")
     magic_parser.add_argument("--stdin", action="store_true", required=True, help="read magic link URL ephemerally from stdin")
 
+    val_sync_parser = subparsers.add_parser("validate-cross-project-sync")
+    val_sync_parser.add_argument("--current-row-json", required=True)
+    val_sync_parser.add_argument("--master-row-json", required=True)
+    val_sync_parser.add_argument("--proposed-json", required=True)
+
     return parser
 
 
@@ -177,6 +184,7 @@ def main() -> int:
                 cdp_url=args.cdp_url,
                 allow_local_fallback=args.allow_local_fallback,
                 keep_on_human_blocker=args.keep_on_human_blocker,
+                keep_tab=args.keep_tab,
                 resume_target_id=args.target_id,
                 target_domain=args.target_domain,
             ) as runtime:
@@ -196,7 +204,11 @@ def main() -> int:
                 credential_root=Path(args.credential_root) if args.credential_root else None,
                 cdp_url=args.cdp_url,
                 allow_local_fallback=args.allow_local_fallback,
-                keep_on_human_blocker=args.keep_on_human_blocker,
+                # Execute is a submission workflow: a detected human blocker must
+                # always retain the exact target even when the caller omitted the
+                # optional inspect-oriented flag.
+                keep_on_human_blocker=True,
+                keep_tab=args.keep_tab,
                 resume_target_id=args.target_id,
                 target_domain=args.target_domain,
             ) as runtime:
@@ -424,6 +436,7 @@ def main() -> int:
                 headless=not args.headed,
                 cdp_url=args.cdp_url,
                 allow_local_fallback=args.allow_local_fallback,
+                keep_tab=args.keep_tab,
                 resume_target_id=args.target_id,
             ) as runtime:
                 result = runtime.resolve_email_otp(args.target_id, otp_code)
@@ -444,9 +457,31 @@ def main() -> int:
                 headless=not args.headed,
                 cdp_url=args.cdp_url,
                 allow_local_fallback=args.allow_local_fallback,
+                keep_tab=args.keep_tab,
                 resume_target_id=args.target_id,
             ) as runtime:
                 result = runtime.resolve_email_magic_link(args.target_id, magic_url, args.platform_domain)
+
+        elif args.command == "validate-cross-project-sync":
+            try:
+                cur_row = json.loads(args.current_row_json)
+                m_row = json.loads(args.master_row_json)
+                prop = json.loads(args.proposed_json)
+            except json.JSONDecodeError:
+                return _emit_error("INVALID_JSON", "current-row-json, master-row-json and proposed-json must be valid JSON")
+            if not isinstance(cur_row, dict):
+                return _emit_error("INVALID_CURRENT_ROW", "current-row-json must be a JSON object")
+            if not isinstance(m_row, dict):
+                return _emit_error("INVALID_MASTER_ROW", "master-row-json must be a JSON object")
+            if not isinstance(prop, dict):
+                return _emit_error("INVALID_PROPOSED", "proposed-json must be a JSON object")
+
+            validated = ProductionSheetGate.validate_cross_project_sync_mutation(
+                current_project_row=cur_row,
+                master_row=m_row,
+                proposed=prop,
+            )
+            result = {"ok": True, "validated": validated}
 
         else:
             return _emit_error("INVALID_COMMAND", "unsupported command")

@@ -71,6 +71,15 @@ def main():
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, destination, dirs_exist_ok=True)
 
+    # 同步更新 Codex personal 插件缓存目录，确保实际加载运行副本与源码完全一致 (修复 R10)
+    codex_cache_base = home / ".codex" / "plugins" / "cache" / "personal" / PLUGIN_NAME
+    updated_caches = []
+    if codex_cache_base.exists() and codex_cache_base.is_dir():
+        for version_dir in codex_cache_base.iterdir():
+            if version_dir.is_dir():
+                shutil.copytree(source, version_dir, dirs_exist_ok=True)
+                updated_caches.append(version_dir)
+
     marketplace_path = home / ".agents" / "plugins" / "marketplace.json"
     marketplace_path.parent.mkdir(parents=True, exist_ok=True)
     marketplace = load_marketplace(marketplace_path)
@@ -88,6 +97,8 @@ def main():
     private_root = home / ".backlink-autofill"
 
     print(f"Installed plugin: {destination}")
+    for cdir in updated_caches:
+        print(f"Updated Codex plugin cache: {cdir}")
     print(f"Updated marketplace: {marketplace_path}")
     print(f"Shared submitter profile: {profile_path}{' (created)' if created else ' (preserved)'}")
     print(f"Shared control plane: {private_root / 'control-plane.json'} (preserved if present; configure separately)")

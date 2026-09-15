@@ -248,6 +248,32 @@ class TabIsolationAndResumeTests(unittest.TestCase):
             self.assertIsNotNone(retained)
             self.assertEqual(retained["status"], "NEEDS_HUMAN")
 
+    def test_execute_submit_target_survives_until_business_confirmation(self):
+        """A click/submit result remains an explicit recovery target, not a terminal cleanup signal."""
+        cmd = [
+            sys.executable,
+            str(CLI),
+            "execute",
+            "--profile-dir", self.user_data_dir,
+            "--browser-channel", "chromium",
+            "--cdp-url", self.cdp_url,
+            "--url", f"{self.base_url}/delayed-submit.html",
+            "--actions-json", json.dumps([{"type": "submit", "selector": "#submit"}]),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertTrue(result["requires_business_confirmation"])
+        target_id = result["target_id"]
+        self.assertIsNotNone(target_id)
+
+        with urlopen(f"{self.cdp_url}/json/list") as resp:
+            targets = {item.get("id"): item for item in json.load(resp)}
+        self.assertIn(target_id, targets)
+        self.assertIn("/delayed-submit.html", targets[target_id].get("url", ""))
+        with urlopen(f"{self.cdp_url}/json/close/{target_id}"):
+            pass
+
     def test_resume_preserves_target_until_explicit_resolve(self):
         """P2-4: resume 只恢复原 target；无 blocker 不等于业务终态，Runtime 退出不得自动关闭。"""
         # 1. 建立初始 Tab，在表单中填入未提交的中间状态并保留
@@ -277,7 +303,6 @@ class TabIsolationAndResumeTests(unittest.TestCase):
                 "Unsaved Form State",
                 "Form field was wiped out by an unnecessary page reload on resume!",
             )
-
         # Resume target 默认继续保留；只有显式 human-pending-resolve 在确认终态后负责关闭。
         with urlopen(f"{self.cdp_url}/json/list") as resp:
             targets = json.load(resp)
@@ -287,8 +312,6 @@ class TabIsolationAndResumeTests(unittest.TestCase):
                 target_ids,
                 "Resumed target was closed merely because the current page had no human blocker",
             )
-
-        # 本测试没有创建 durable pending record，因此直接手动清理这个测试 target。
         with urlopen(f"{self.cdp_url}/json/close/{target_id_1}"):
             pass
 
@@ -406,4 +429,3 @@ class TabIsolationAndResumeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

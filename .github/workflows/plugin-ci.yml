@@ -54,6 +54,9 @@ jobs:
           JSON
 
           python3 scripts/install-personal.py --repo "$GITHUB_WORKSPACE"
+
+          cmp plugins/backlink-autofill/scripts/browser_cli.py "$HOME/plugins/backlink-autofill/scripts/browser_cli.py"
+          cmp plugins/backlink-autofill/scripts/browser_runtime.py "$HOME/plugins/backlink-autofill/scripts/browser_runtime.py"
           test -f "$HOME/plugins/backlink-autofill/.codex-plugin/plugin.json"
           test -f "$HOME/.backlink-autofill/submitter-profile.json"
           test -d "$HOME/.backlink-autofill/projects"
@@ -111,6 +114,9 @@ jobs:
 
           python3 scripts/install-personal.py --repo "$GITHUB_WORKSPACE"
 
+          cmp plugins/backlink-autofill/scripts/browser_cli.py "$HOME/plugins/backlink-autofill/scripts/browser_cli.py"
+          cmp plugins/backlink-autofill/scripts/browser_runtime.py "$HOME/plugins/backlink-autofill/scripts/browser_runtime.py"
+
           python3 - <<'PY'
           import json, os
           from pathlib import Path
@@ -126,5 +132,5 @@ jobs:
           assert control_payload['master_sheet'] == '外链总表', control_payload
           assert control_payload['project_sheet'] == '外链管理', control_payload
           assert control_payload['default_batch_size'] == 100, control_payload
-          print('shared profile, control plane, credentials, runtime dirs, and sibling project preservation passed')
+          print('shared profile, control plane, credentials, runtime dirs, sibling project preservation, and installed runtime byte identity passed')
           PY

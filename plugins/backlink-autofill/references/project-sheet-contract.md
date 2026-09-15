@@ -6,8 +6,7 @@ This Codex plugin uses one shared Google Spreadsheet as the backlink control pla
 
 - 所有项目共用同一个 Spreadsheet。
 - Tab `外链总表` stores global backlink/platform facts (日常隐藏，不影响程序读写).
-- Tab `外链管理` stores project-specific execution rows for every project (日常唯一可见 Tab).
-- Project isolation is enforced by exact `项目ID` matching. The agent must never read or mutate another project's rows as part of a selected-project run.
+- Project isolation is enforced by exact `项目ID` matching. Routine runs must never mutate another project's rows. (Authorized Exception: when platform-level global unavailability such as dead domain or closed submissions is confirmed on `外链总表`, the agent is authorized to sync other projects' unstarted `待提交` rows to `不适用`/`失败` using `validate_cross_project_sync_mutation`).
 - 每次最多读取 100 条 current-project rows whose `状态` is `待提交` unless the user explicitly requests a smaller limit.
 
 ## Tab: `外链总表`
@@ -124,8 +123,6 @@ Email verification during backlink platform onboarding:
 ## Write integrity
 
 - Every mutation targets the exact original row.
-- Re-read the mutated row after writing.
-- Never mutate rows for a different `项目ID`.
-- Never write `已提交`, `审核中`, `已排期`, or `已上线` without browser-observed evidence.
+- Never mutate rows for a different `项目ID` (except for authorized global exclusion sync of unstarted `待提交` rows).
 - `需人工` must include a concrete `原因/备注`.
 - Unknown facts remain blank rather than inferred.
