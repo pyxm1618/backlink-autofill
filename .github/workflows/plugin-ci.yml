@@ -5,9 +5,6 @@ on:
     branches: ['feat/codex-plugin', 'main']
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -15,43 +12,6 @@ jobs:
       BACKLINK_ALLOW_LOCAL_FALLBACK: "1"
     steps:
       - uses: actions/checkout@v4
-      - name: Apply staged repair patch to PR head
-        if: github.event_name == 'pull_request' && github.head_ref == 'fix/20260915-browser-result-lifecycle'
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-        run: |
-          git fetch origin "refs/heads/$HEAD_REF:refs/remotes/origin/$HEAD_REF"
-          git checkout -B "$HEAD_REF" "origin/$HEAD_REF"
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('plugins/backlink-autofill/scripts/browser_runtime.py')
-          text = path.read_text(encoding='utf-8')
-          if 'POST_ACTION_STABLE_POLLS = 2' not in text:
-              print('bounded observation repair already applied')
-              raise SystemExit(0)
-
-          replacements = [
-              ('POST_ACTION_POLL_MS = 200\nPOST_ACTION_STABLE_POLLS = 2\n', 'POST_ACTION_POLL_MS = 200\n'),
-              ('        changed = False\n        stable_after_change = 0\n', '        changed = False\n'),
-              ('                changed = True\n                stable_after_change = 0\n                last_snapshot = current\n', '                changed = True\n                last_snapshot = current\n'),
-              ('            elif changed:\n                stable_after_change += 1\n\n', ''),
-              ('            if changed and stable_after_change >= POST_ACTION_STABLE_POLLS:\n                break\n\n', ''),
-          ]
-          for old, new in replacements:
-              if old not in text:
-                  raise SystemExit(f'expected browser runtime fragment missing: {old!r}')
-              text = text.replace(old, new, 1)
-          path.write_text(text, encoding='utf-8')
-          PY
-          if ! git diff --quiet -- plugins/backlink-autofill/scripts/browser_runtime.py; then
-            git diff --check
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add plugins/backlink-autofill/scripts/browser_runtime.py
-            git commit -m "fix(browser): observe full bounded result window"
-            git push origin "HEAD:$HEAD_REF"
-          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
