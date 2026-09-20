@@ -5,7 +5,7 @@
 - Project ID: `quick-iching`
 - Name: Quick I Ching
 - Canonical URL: `https://quickiching.com/`
-- Positioning: Free online I Ching casting and hexagram reading tool.
+- Positioning: Online I Ching casting and interpretation app with AI-powered deep reading capability.
 - Organization / brand display name: `Quick I Ching` when a form means product/brand organization rather than a legal company name.
 
 ## SEO
@@ -49,7 +49,8 @@ Category candidates:
 
 ## Approved factual claims
 
-- Free online I Ching casting and hexagram reading tool.
+- Online I Ching casting and hexagram reading app.
+- AI-powered deep reading is a current product capability.
 - Three-Coin is supported and is the primary/default casting method.
 - Yarrow Stalk casting is supported.
 - Mei Hua Yi Shu is supported.
@@ -60,9 +61,7 @@ Category candidates:
 ## Forbidden / unsupported claims
 
 Do not state or imply:
-- `AI-powered`
-- `AI fortune teller`
-- that AI is currently a product feature
+- `AI fortune teller` or claims that AI predicts the future with certainty
 - medical, legal, or investment advice
 - unverified awards, metrics, user counts, reviews, partnerships, integrations, or pricing claims
 - that `Quick I Ching` is a registered/legal company name unless separately verified
@@ -95,4 +94,4 @@ If a project-specific required value remains unconfigured, flag it instead of in
 - The canonical Sheet project key is exactly `quick-iching`.
 - Queue/control-plane location comes only from private `~/.backlink-autofill/control-plane.json` and the shared Sheet contract; no Google Sheet ID or legacy queue-tab name belongs in this public project profile.
 - If a project queue row leaves `目标URL` blank, the canonical default is `https://quickiching.com/`.
-- A platform explicitly restricted to AI products is incompatible with this project under the current reviewed facts and should be recorded as `不适用`; never relabel Quick I Ching as AI-powered to qualify.
+- Quick I Ching is currently an AI-enabled application. AI-only directories are eligible when their other submission requirements are satisfied; do not reject them merely for being AI-only.
