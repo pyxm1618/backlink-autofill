@@ -42,9 +42,11 @@ assert(marketplace.plugins.some((p) => p.name === manifest.name && p.source?.pat
 
 assert(sheetContract.includes('`外链总表`'), 'master Sheet tab name missing')
 assert(sheetContract.includes('`外链管理`'), 'project Sheet tab name missing')
-assert(sheetContract.includes('外链ID | 平台域名 | 提交入口 | 发现来源 | 发现时间 | 基础状态 | 基础排除原因 | 实测免费 | 实测需登录 | 实测登录方式 | 实测限制 | 实测链接属性 | 最后验证时间 | 平台备注'), 'master Sheet headers mismatch')
+assert(sheetContract.includes('外链ID | 平台域名 | 提交入口 | 发现来源 | 发现时间 | 基础状态(隐藏技术列) | 基础排除原因(隐藏技术列) | 实测免费 | 实测需登录 | 实测登录方式 | 实测限制 | 实测链接属性 | 最后验证时间 | 平台备注 | 状态 | 淘汰原因 | 平台类型 | 获取方式'), 'master Sheet headers mismatch')
 assert(sheetContract.includes('项目ID | 外链ID | 外链域名 | 状态 | 尝试次数 | 最近操作时间 | 目标URL | 结果链接 | 原因/备注 | 证据摘要'), 'project Sheet headers mismatch')
 assert(sheetContract.includes('候选 / 已排除 / 失效'), 'master Chinese status options missing')
+assert(sheetContract.includes('`状态`：只允许空白或 `可用`'), 'master visible usable-status rule missing')
+assert(sheetContract.includes('`淘汰原因`'), 'master blacklist-reason rule missing')
 assert(sheetContract.includes('待提交 / 处理中 / 已提交 / 审核中 / 已排期 / 已上线 / 需人工 / 失败 / 不适用'), 'project Chinese status options missing')
 assert(sheetContract.includes('每次最多读取 100 条'), 'per-run batch contract missing')
 assert(sheetContract.includes('所有项目共用同一个 Spreadsheet'), 'single-workbook topology missing')
