@@ -27,9 +27,9 @@
 
 - Listing title: `WYRPlay — Would You Rather Questions Online`
 - Tagline: `Play fun Would You Rather questions for any group or occasion`
-- Short description: `WYRPlay is a free online Would You Rather game and browsable question library. Choose Option A or B, go to the next dilemma or pick a random question, open Presenter Mode for group play, or browse by audience, occasion, and tone.`
+- Short description: `WYRPlay is a free online Would You Rather game and browsable question library. Choose Option A or B, go to the next dilemma or pick a random question, open Presenter Mode for group play, and explore questions organized by audience, occasion, tone, and reviewed difficulty metadata.`
 - Medium description: `WYRPlay is a free online Would You Rather question game with a searchable library for kids, friends, couples, parties, and classrooms. Choose between Option A and Option B, move to the next question or pick one at random, use Presenter Mode for a shared screen, and explore collections for kids, funny, hard, friends, and couples.`
-- Long description: `WYRPlay is a free online Would You Rather question game and searchable dilemma library for groups and everyday conversation. Players can choose Option A or Option B, move through questions with Next, pick a Random question, or open Presenter Mode for a fullscreen shared display with keyboard navigation. The library can be searched by keyword and browsed with filters for audience, occasion, tone, and difficulty. Dedicated collections cover kids, funny, hard, friends, and couples questions, with ideas for parties and classrooms.`
+- Long description: `WYRPlay is a free online Would You Rather question game and browsable dilemma library for groups and everyday conversation. Players can choose Option A or Option B, move through questions with Next, pick a Random question, or open Presenter Mode for a fullscreen shared display with keyboard navigation. Questions carry structured metadata for age groups, relationships, occasions, tones, and reviewed difficulty where available. Dedicated collections cover kids, funny, hard, friends, and couples questions, with ideas for parties and classrooms.`
 
 ## Approved tags / category candidates
 
@@ -55,10 +55,10 @@ Category candidates:
 
 ## Approved factual claims
 
-- WYRPlay is a free online Would You Rather question game and searchable question library.
+- WYRPlay is a free online Would You Rather question game and browsable question library.
 - Players can choose Option A or Option B, advance with Next, and select a Random question.
 - Presenter Mode provides a fullscreen display with keyboard navigation for shared-screen group play.
-- The library supports keyword search and filters for audience, occasion, tone, and difficulty.
+- Questions use structured metadata for age groups, relationships, occasions, tones, and reviewed difficulty where available.
 - Public collections cover kids, funny, hard, friends, and couples questions; the site also presents questions for parties and classrooms.
 
 ## Forbidden / unsupported claims
