@@ -5,6 +5,12 @@
       "name": "Quick I Ching",
       "aliases": ["quickiching", "quickiching.com"],
       "profile": "./projects/quick-iching.md"
+    },
+    {
+      "id": "wyrplay",
+      "name": "WYRPlay",
+      "aliases": ["wyrplay", "wyrplay.com", "www.wyrplay.com"],
+      "profile": "./projects/wyrplay.md"
     }
   ]
 }
